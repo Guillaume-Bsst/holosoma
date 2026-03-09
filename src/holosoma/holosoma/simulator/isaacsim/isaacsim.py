@@ -59,6 +59,8 @@ from holosoma.simulator.shared.virtual_gantry import (
 
 from holosoma.simulator.types import ActorNames, ActorIndices, EnvIds, ActorStates, ActorPoses
 
+import omni.usd
+from pxr import UsdPhysics, Sdf
 
 class IsaacSim(BaseSimulator):
     def __init__(self, tyro_config: FullSimConfig, terrain_manager: TerrainManager, device: str):
@@ -117,6 +119,7 @@ class IsaacSim(BaseSimulator):
             num_envs=self.training_config.num_envs,
             env_spacing=self.simulator_config.scene.env_spacing,
             replicate_physics=self.simulator_config.scene.replicate_physics,
+            filter_collisions=self.simulator_config.sim.filter_collisions,
         )
         # generate scene
         with Timer("[INFO]: Time taken for scene creation", "scene_creation"):
@@ -378,6 +381,27 @@ class IsaacSim(BaseSimulator):
         log_robot_properties("/World/envs/env_0/Robot", "*")
 
         self.scene.articulations["robot"] = self._robot
+
+        stage = omni.usd.get_context().get_stage()
+        
+        robot_path = "/World/envs/env_0/Robot"
+        pelvis_path = f"{robot_path}/pelvis"
+        l_hip_path = f"{robot_path}/left_hip_roll_link"
+        r_hip_path = f"{robot_path}/right_hip_roll_link"
+
+        pelvis_prim = stage.GetPrimAtPath(pelvis_path)
+        l_hip_prim = stage.GetPrimAtPath(l_hip_path)
+        r_hip_prim = stage.GetPrimAtPath(r_hip_path)
+
+        if pelvis_prim.IsValid() and l_hip_prim.IsValid() and r_hip_prim.IsValid():
+            filtered_pairs_api = UsdPhysics.FilteredPairsAPI.Apply(pelvis_prim)
+            
+            filtered_pairs_api.GetFilteredPairsRel().AddTarget(Sdf.Path(l_hip_path))
+            filtered_pairs_api.GetFilteredPairsRel().AddTarget(Sdf.Path(r_hip_path))
+            
+            logger.info(f"[FIX] Applied UsdPhysics.FilteredPairsAPI between pelvis and hip_roll links.")
+        else:
+            logger.warning("[FIX ERROR] Target prims not found. Check URDF-to-USD names.")
 
         self.contact_sensor = ContactSensor(contact_sensor_config)
         self.scene.sensors["contact_sensor"] = self.contact_sensor
