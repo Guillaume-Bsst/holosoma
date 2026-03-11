@@ -188,14 +188,14 @@ apptainer exec --nv \
     cd /workspace/holosoma && \
     xvfb-run -a python src/holosoma/holosoma/train_agent.py \
         exp:g1-29dof-wbt-w-object \
-        simulator:isaacsim \
+        simulator:isaacsim-w-object \
         logger:wandb \
         --logger.video.enabled=False \
         --training.num-envs=512 \
         --command.setup-terms.motion-command.params.motion-config.motion-file=\"holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz\" \
-        --simulator.config.scene.rigid-objects.0.name=\"box\" \
+        --simulator.config.scene.rigid-objects.0.name=\"largebox\" \
         --simulator.config.scene.rigid-objects.0.urdf-path=\"src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf\" \
-        --simulator.config.scene.rigid-objects.0.position=\"[0.5,0.0,0.5]\"
+        --simulator.config.scene.rigid-objects.0.position=\"[1.0,0.0,1.0]\"
 "
 # The 0.5 small delta is just a security to not have an explosive computing at the simulation reset. The object position is adjusted randomly right after the reset. 
 
@@ -263,17 +263,18 @@ apptainer exec --nv --writable-tmpfs \
     cd /workspace/holosoma && \
     xvfb-run -a python src/holosoma/holosoma/train_agent.py \
         exp:g1-29dof-wbt-w-object \
-        simulator:mjwarp \
+        simulator:mjwarp-w-object \
         logger:wandb \
         terrain:terrain-locomotion-plane \
         --logger.video.enabled=False \
-        --training.num-envs=512 \
+        --training.num-envs=8192 \
         --command.setup-terms.motion-command.params.motion-config.motion-file=\"holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz\" \
-        --simulator.config.scene.rigid-objects.0.name=\"box\" \
+        --simulator.config.scene.rigid-objects.0.name=\"largebox\" \
         --simulator.config.scene.rigid-objects.0.urdf-path=\"src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf\" \
-        --simulator.config.scene.rigid-objects.0.position=\"[0.5,0.0,0.5]\" \
+        --simulator.config.scene.rigid-objects.0.position=\"[1.0,0.0,1.0]\" \
         --terrain.terrain-term.mesh-type=\"PLANE\" \
-        --terrain.terrain-term.obj-file-path=\"\"
+        --terrain.terrain-term.obj-file-path=\"\" \
+        --simulator.config.mujoco-warp.ccd-iterations=200
 "
 
 ```

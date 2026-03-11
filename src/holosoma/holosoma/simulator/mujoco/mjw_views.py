@@ -616,3 +616,54 @@ class MjwRootStateView:
 
     def __repr__(self) -> str:
         return f"<MjwRootStateView shape={self.shape} device={self.device}>"
+
+
+class MjwAllRootStatesProxy:
+    """Unified root-state proxy for MuJoCo covering robots and rigid objects.
+
+    Equivalent to IsaacSim's AllRootStatesProxy: routes ``__getitem__`` /
+    ``__setitem__`` calls that use ObjectRegistry flat indices to the correct
+    underlying state source (robot qpos/qvel arrays or Warp rigid-body tensors).
+
+    Parameters
+    ----------
+    simulator : MuJoCoSim
+        The MuJoCo simulator instance.  Only a weak reference is stored to
+        avoid circular ownership.
+    """
+
+    def __init__(self, simulator) -> None:
+        self._sim = simulator
+
+    def __getitem__(self, indices) -> torch.Tensor:
+        if isinstance(indices, tuple):
+            tensor_indices, column_slice = indices
+        else:
+            tensor_indices, column_slice = indices, slice(None)
+
+        states = self._sim.get_actor_states_by_index(tensor_indices)
+        return states[:, column_slice]
+
+    def __setitem__(self, indices, values) -> None:
+        if isinstance(indices, tuple):
+            tensor_indices, _ = indices
+        else:
+            tensor_indices = indices
+
+        self._sim.set_actor_states_by_index(tensor_indices, values, write_updates=False)
+
+    @property
+    def shape(self) -> torch.Size:
+        objects_per_env = self._sim.object_registry.objects_per_env
+        return torch.Size([objects_per_env * self._sim.num_envs, 13])
+
+    @property
+    def device(self) -> str:
+        return self._sim.sim_device
+
+    def clone(self) -> torch.Tensor:
+        all_indices = torch.arange(self.shape[0], device=self.device, dtype=torch.long)
+        return self._sim.get_actor_states_by_index(all_indices)
+
+    def __repr__(self) -> str:
+        return f"<MjwAllRootStatesProxy shape={self.shape} device={self.device}>"

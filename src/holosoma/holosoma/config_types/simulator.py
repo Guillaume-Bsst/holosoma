@@ -57,6 +57,16 @@ class MujocoWarpConfig:
     Only override if you know you need more constraint capacity.
     """
 
+    ccd_iterations: int = 35
+    """Maximum CCD (Convex Collision Detection) iterations per contact (default: 35).
+
+    MuJoCo's default. Increase for large or complex rigid objects
+    (e.g. manipulation boxes) if you see "opt.ccd_iterations needs to be increased".
+
+    Command line usage:
+        --simulator.config.mujoco-warp.ccd-iterations=200
+    """
+
 
 @dataclass(frozen=True)
 class ResetManagerConfig:
@@ -358,14 +368,22 @@ class SceneFileConfig:
 class RigidObjectConfig:
     """Configuration for individual rigid objects."""
 
-    name: str
+    name: str = "object"
     """Name identifier for the rigid object."""
 
     urdf_path: str | None = None
-    """Path to URDF file for the object. Defaults to None."""
+    """Path to URDF file for the object (used by IsaacSim). Defaults to None."""
 
     usd_path: str | None = None
-    """Path to USD file for the object. Defaults to None."""
+    """Path to USD file for the object (used by IsaacSim). Defaults to None."""
+
+    mjcf_path: str | None = None
+    """Path to MJCF/XML file for the object (used by MuJoCo). Defaults to None.
+
+    The MJCF can be a simple free-floating body or reference meshes. A freejoint
+    will be added automatically if the root body has none, making the object
+    poseable via set_actor_states().
+    """
 
     position: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     """Position [x, y, z] of the object. Defaults to [0.0, 0.0, 0.0]."""
@@ -390,23 +408,7 @@ class SceneConfig:
     scene_files: list[SceneFileConfig] = field(default_factory=list) # Renamed from sources
     """List of scene files (USD/URDF) to load."""
 
-    rigid_objects: list[RigidObjectConfig] = field(
-        default_factory=lambda: [
-            RigidObjectConfig(
-                name="object",
-                urdf_path="src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
-                usd_path=None, 
-                position=[0.5, 0.0, 0.5],
-                physics=PhysicsConfig(
-                    isaacsim=IsaacSimPhysicsConfig(
-                        static_friction=1.0, 
-                        dynamic_friction=1.0, 
-                        restitution=0.0
-                    )
-                )
-            )
-        ]
-    )
+    rigid_objects: list[RigidObjectConfig] = field(default_factory=list)
     """Standalone rigid objects to instantiate."""
 
     env_spacing: float = 20.0

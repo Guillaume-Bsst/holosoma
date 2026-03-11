@@ -11,7 +11,7 @@ import numpy as np
 from loguru import logger
 
 from holosoma.config_types.robot import RobotConfig
-from holosoma.config_types.simulator import MujocoXMLFilterCfg, SimulatorConfig
+from holosoma.config_types.simulator import MujocoXMLFilterCfg, RigidObjectConfig, SimulatorConfig
 from holosoma.managers.terrain.base import TerrainTermBase
 from holosoma.utils.module_utils import get_holosoma_root
 
@@ -40,6 +40,7 @@ class MujocoSceneManager:
         self.world_spec.copy_during_attach = True
         self._setup_world_options(simulator_config)
         self.robot_config: RobotConfig | None = None  # Set when adding robot
+        self.object_prefixes: dict[str, str] = {}  # object_name -> MjSpec prefix used
 
     def _setup_world_options(self, simulator_config: SimulatorConfig) -> None:
         """Configure world specification options from simulator config.
@@ -482,6 +483,97 @@ class MujocoSceneManager:
             return True
 
         return geom.type == mujoco.mjtGeom.mjGEOM_PLANE
+
+    def add_object(self, object_cfg: RigidObjectConfig, prefix: str | None = None) -> str:
+        """Add a rigid object to the scene using MjSpec composition.
+
+        Loads the object from a MJCF or URDF file, ensures it has a freejoint
+        so it can be repositioned at runtime, configures collision classes so the
+        object interacts with both the robot and the terrain, then attaches it to
+        the world spec.
+
+        Parameters
+        ----------
+        object_cfg : RigidObjectConfig
+            Object configuration containing the asset path and initial pose.
+            Provide ``mjcf_path`` for MJCF files or ``urdf_path`` for URDF files.
+        prefix : str | None
+            MjSpec namespace prefix.  Defaults to ``"<name>_"``.
+
+        Returns
+        -------
+        str
+            The prefix actually used (useful for body-name lookups after compile).
+
+        Raises
+        ------
+        ValueError
+            If neither ``mjcf_path`` nor ``urdf_path`` is set in the config.
+        """
+        prefix = prefix or f"{object_cfg.name}_"
+
+        # --- Resolve asset path -------------------------------------------
+        if object_cfg.mjcf_path:
+            asset_path = object_cfg.mjcf_path
+        elif object_cfg.urdf_path:
+            asset_path = object_cfg.urdf_path
+        else:
+            raise ValueError(
+                f"Object '{object_cfg.name}' has no asset path. "
+                "Set 'mjcf_path' (preferred for MuJoCo) or 'urdf_path'."
+            )
+
+        logger.info(f"Adding object '{object_cfg.name}' from: {asset_path} with prefix: {prefix}")
+        obj_spec = mujoco.MjSpec.from_file(asset_path)
+
+        # --- Ensure root body has a freejoint (makes object poseable) --------
+        # Iterate direct children of worldbody to find the root body.
+        root_body = None
+        for body in obj_spec.worldbody.bodies:
+            root_body = body
+            break
+
+        if root_body is None:
+            raise ValueError(
+                f"Object MJCF/URDF '{asset_path}' has no bodies in its worldbody. "
+                "The file must contain at least one body."
+            )
+
+        # Check whether a freejoint already exists on the root body.
+        has_freejoint = any(
+            getattr(j, "type", None) == mujoco.mjtJoint.mjJNT_FREE
+            for j in root_body.joints
+        )
+        if not has_freejoint:
+            freejoint = root_body.add_joint()
+            freejoint.type = mujoco.mjtJoint.mjJNT_FREE
+            freejoint.name = "freejoint"
+            logger.debug(f"Added freejoint to root body of object '{object_cfg.name}'")
+
+        # --- Collision classes ------------------------------------------------
+        # Robot bodies: contype=1, conaffinity=2 (environment-only) or 3 (self+env)
+        # Terrain geoms: contype=2, conaffinity=1
+        # Objects should collide with robot (1) AND terrain (2):
+        #   contype=3 (fires on contact with class-1 or class-2 geoms)
+        #   conaffinity=3 (responds to class-1 and class-2 contacts)
+        for body in obj_spec.bodies:
+            for geom in body.geoms:
+                if geom.contype == 0 and geom.conaffinity == 0:
+                    continue  # visual-only geom, skip
+                geom.contype = 3
+                geom.conaffinity = 3
+
+        # --- Attach at desired initial position -------------------------------
+        # orientation is stored as [w, x, y, z] in config — same as MuJoCo.
+        site = self.world_spec.worldbody.add_site(
+            pos=object_cfg.position,
+            quat=object_cfg.orientation,
+        )
+        self.world_spec.attach(obj_spec, site=site, prefix=prefix)
+
+        self.object_prefixes[object_cfg.name] = prefix
+        logger.info(f"Object '{object_cfg.name}' attached with prefix '{prefix}'")
+        return prefix
 
     def compile(self) -> mujoco.MjModel:
         """Compile the final world model from the specification.

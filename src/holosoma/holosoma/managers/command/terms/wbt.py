@@ -313,12 +313,15 @@ class MotionCommand(CommandTermBase):
         # 3. get the name of the object, or indices of the object
         if self.motion.has_object:
             # cache the object_index_in_simulator
-            self.object_name = "object"  # hardcoded object name
+            # Use the name from scene config if available, fall back to "object" for legacy Isaac path
+            sim_rigid_objects = self._env.simulator.simulator_config.scene.rigid_objects
+            self.object_name = sim_rigid_objects[0].name if sim_rigid_objects else "object"
             self.object_indices_in_simulator = self._env.simulator.get_actor_indices(self.object_name, env_ids=None)
 
-            assert self._env.simulator.get_simulator_type() == SimulatorType.ISAACSIM, (
-                "Object is only supported in IsaacSim"
-            )
+            assert self._env.simulator.get_simulator_type() in (
+                SimulatorType.ISAACSIM,
+                SimulatorType.MUJOCO,
+            ), "Object interaction is only supported in IsaacSim and MuJoCo"
 
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:

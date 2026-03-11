@@ -1002,10 +1002,11 @@ def randomize_robot_rigid_body_material_startup(
         if len(env._mj_robot_geom_ids) == 0:
             return
 
-        new_friction = np.random.uniform(
-            low=dynamic_friction_range[0], 
-            high=dynamic_friction_range[1]
-        )
+        # MuJoCo does not distinguish static/dynamic friction; geom_friction[:, 0] is the
+        # sliding friction coefficient. We sample from the combined range of both inputs.
+        low = min(static_friction_range[0], dynamic_friction_range[0])
+        high = max(static_friction_range[1], dynamic_friction_range[1])
+        new_friction = np.random.uniform(low=low, high=high)
 
         mj_model.geom_friction[env._mj_robot_geom_ids, 0] = new_friction
 
@@ -1084,15 +1085,16 @@ def randomize_object_rigid_body_material_startup(
             logger.warning("[Randomization] No object geoms found for MuJoCo material randomization.")
             return
 
-        new_friction = np.random.uniform(
-            low=dynamic_friction_range[0], 
-            high=dynamic_friction_range[1]
-        )
+        # MuJoCo does not distinguish static/dynamic friction; geom_friction[:, 0] is the
+        # sliding friction coefficient. We sample from the combined range of both inputs.
+        low = min(static_friction_range[0], dynamic_friction_range[0])
+        high = max(static_friction_range[1], dynamic_friction_range[1])
+        new_friction = np.random.uniform(low=low, high=high)
 
         mj_model.geom_friction[env._mj_object_geom_ids, 0] = new_friction
 
         mujoco.mj_setConst(mj_model, simulator.backend.data)
-        
+
         return
 
     else:
@@ -1154,12 +1156,12 @@ def randomize_object_rigid_body_mass_startup(
         mj_model = simulator.backend.model
 
         if not hasattr(env, '_mj_object_body_ids'):
-            env._mj_object_body_ids = []
+            body_ids = []
             for i in range(mj_model.nbody):
                 name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, i)
-                # Recherche plus robuste (minuscules)
                 if name and ("box" in name.lower() or "object" in name.lower()):
-                    env._mj_object_body_ids.append(i)
+                    body_ids.append(i)
+            env._mj_object_body_ids = np.array(body_ids, dtype=np.int32)
             logger.info(f"[Randomization] Registered {len(env._mj_object_body_ids)} object bodies for mass DR.")
 
         if len(env._mj_object_body_ids) == 0:
@@ -1239,11 +1241,12 @@ def randomize_object_rigid_body_inertia_startup(
         mj_model = simulator.backend.model
 
         if not hasattr(env, '_mj_object_body_ids'):
-            env._mj_object_body_ids = []
+            body_ids = []
             for i in range(mj_model.nbody):
                 name = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, i)
                 if name and ("box" in name.lower() or "object" in name.lower()):
-                    env._mj_object_body_ids.append(i)
+                    body_ids.append(i)
+            env._mj_object_body_ids = np.array(body_ids, dtype=np.int32)
 
         if len(env._mj_object_body_ids) == 0:
             return
