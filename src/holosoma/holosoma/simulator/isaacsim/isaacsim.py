@@ -418,13 +418,23 @@ class IsaacSim(BaseSimulator):
 
         self.scene.filter_collisions(global_prim_paths=global_collision_prims)
 
-        # add objects if object is provided
-        if self.robot_config.object.object_urdf_path:
-            # Resolve the object asset urdf path using importlib.resources
-            object_asset_urdf_path = resolve_data_file_path(self.robot_config.object.object_urdf_path)
-            object_name = "object"  # hardcoded object name
+        # add objects from scene.rigid_objects (consistent with MuJoCo path)
+        # fallback to robot_config.object.object_urdf_path for backward compatibility
+        scene_rigid_objects = getattr(self.simulator_config.scene, "rigid_objects", [])
+        urdf_objects_to_load = [r for r in scene_rigid_objects if r.urdf_path]
+        if not urdf_objects_to_load and self.robot_config.object.object_urdf_path:
+            from holosoma.config_types.simulator import RigidObjectConfig as RigidObjCfg
+            urdf_objects_to_load = [RigidObjCfg(
+                name="object",
+                urdf_path=self.robot_config.object.object_urdf_path,
+                position=[0.0, 0.0, 0.5],
+            )]
+        for rigid_obj in urdf_objects_to_load:
+            object_asset_urdf_path = resolve_data_file_path(rigid_obj.urdf_path)
+            object_name = rigid_obj.name
+            pos = tuple(rigid_obj.position[:3]) if rigid_obj.position else (0.0, 0.0, 0.5)
             object_cfg = RigidObjectCfg(
-                prim_path=f"/World/envs/env_.*/Object",
+                prim_path=f"/World/envs/env_.*/{object_name.capitalize()}",
                 spawn=sim_utils.UrdfFileCfg(
                     fix_base=False,
                     replace_cylinders_with_capsules=True,
@@ -449,11 +459,13 @@ class IsaacSim(BaseSimulator):
                     ),
                 ),
                 init_state=RigidObjectCfg.InitialStateCfg(
-                    pos=(0.0, 0.0, 0.5),
+                    pos=pos,
                 ),
             )
-            self._object = RigidObject(object_cfg)
-            self.scene.rigid_objects[object_name] = self._object
+            loaded_obj = RigidObject(object_cfg)
+            self.scene.rigid_objects[object_name] = loaded_obj
+        if urdf_objects_to_load:
+            self._object = self.scene.rigid_objects[urdf_objects_to_load[0].name]
 
         # add lights
         # light_config = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.98, 0.95, 0.88))

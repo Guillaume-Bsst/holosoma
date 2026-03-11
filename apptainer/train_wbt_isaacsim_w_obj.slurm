@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=g1_wbt_isaac
+#SBATCH --job-name=g1_wbt_isaac_wobj
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 #SBATCH --time=2-00:00:00
@@ -11,9 +11,12 @@
 #SBATCH -p willow
 #SBATCH -A willow
 
+PROJECT_ROOT="/home/gbesset/WILLOW/holosoma"
+SIF_FILE="$PROJECT_ROOT/apptainer/holosoma.sif"
+
 mkdir -p slurm_logs
-mkdir -p $SCRATCH/holosoma_logs
-mkdir -p $SCRATCH/wandb_cache
+mkdir -p ${PROJECT_ROOT}/logs
+mkdir -p ${PROJECT_ROOT}/wandb
 mkdir -p $SCRATCH/.isaac_cache
 mkdir -p $SCRATCH/isaac_tmp
 mkdir -p $SCRATCH/isaac_pkg_cache
@@ -24,16 +27,13 @@ mkdir -p $SCRATCH/holosoma_converted_robots
 export APPTAINER_CACHEDIR=$SCRATCH/.apptainer_cache
 mkdir -p $APPTAINER_CACHEDIR
 
-PROJECT_ROOT="/home/gbesset/WILLOW/holosoma"
-SIF_FILE="$PROJECT_ROOT/apptainer/holosoma.sif"
-
 apptainer exec --nv \
     --bind /run \
     --bind /dev/shm \
-    --bind $PROJECT_ROOT/src:/workspace/holosoma/src \
+    --bind ${PROJECT_ROOT}/src:/workspace/holosoma/src \
+    --bind ${PROJECT_ROOT}/logs:/workspace/holosoma/logs \
+    --bind ${PROJECT_ROOT}/wandb:/workspace/holosoma/wandb \
     --bind $SCRATCH/.isaac_cache:/root/.local/share/ov \
-    --bind $SCRATCH/holosoma_logs:/workspace/holosoma/logs \
-    --bind $SCRATCH/wandb_cache:/workspace/holosoma/wandb \
     --bind $SCRATCH/isaac_tmp:/tmp \
     --bind $SCRATCH/isaac_pkg_cache:/root/.holosoma_deps/miniconda3/envs/hssim/lib/python3.11/site-packages/isaacsim/kit/cache \
     --bind $SCRATCH/isaac_pkg_data:/root/.holosoma_deps/miniconda3/envs/hssim/lib/python3.11/site-packages/isaacsim/kit/data \
@@ -52,12 +52,12 @@ apptainer exec --nv \
     cd /workspace/holosoma && \
     xvfb-run -a python src/holosoma/holosoma/train_agent.py \
         exp:g1-29dof-wbt-w-object \
-        simulator:isaacsim \
+        simulator:isaacsim-w-object \
         logger:wandb \
         --logger.video.enabled=False \
-        --training.num_envs=8192 \
+        --training.num-envs=8192 \
         --command.setup-terms.motion-command.params.motion-config.motion-file=\"holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz\" \
-        --simulator.config.scene.rigid-objects.0.name=\"box\" \
+        --simulator.config.scene.rigid-objects.0.name=\"largebox\" \
         --simulator.config.scene.rigid-objects.0.urdf-path=\"src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf\" \
-        --simulator.config.scene.rigid-objects.0.position=\"[1,0.0,1]\"
+        --simulator.config.scene.rigid-objects.0.position=\"[1.0,0.0,1.0]\"
 "

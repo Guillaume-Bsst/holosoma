@@ -1050,7 +1050,10 @@ def randomize_object_rigid_body_material_startup(
         if env_ids_cpu.numel() == 0:
             return
 
-        asset_cfg = SceneEntityCfg("object", body_names=".*")
+        _scene_cfg = getattr(getattr(simulator, "simulator_config", None), "scene", None)
+        _rigid_objs = getattr(_scene_cfg, "rigid_objects", None) or []
+        object_name = _rigid_objs[0].name if _rigid_objs else "object"
+        asset_cfg = SceneEntityCfg(object_name, body_names=".*")
         asset_cfg.resolve(simulator.scene)
 
         num_buckets = 64
@@ -1135,7 +1138,10 @@ def randomize_object_rigid_body_mass_startup(
         if env_ids_cpu.numel() == 0:
             return
 
-        asset_cfg = SceneEntityCfg("object", body_names=".*")
+        _scene_cfg = getattr(getattr(simulator, "simulator_config", None), "scene", None)
+        _rigid_objs = getattr(_scene_cfg, "rigid_objects", None) or []
+        object_name = _rigid_objs[0].name if _rigid_objs else "object"
+        asset_cfg = SceneEntityCfg(object_name, body_names=".*")
         asset_cfg.resolve(simulator.scene)
 
         _isaacsim_randomize_rigid_body_mass(
@@ -1215,7 +1221,10 @@ def randomize_object_rigid_body_inertia_startup(
         if env_ids_cpu.numel() == 0:
             return
 
-        asset_cfg = SceneEntityCfg("object", body_names=".*")
+        _scene_cfg = getattr(getattr(simulator, "simulator_config", None), "scene", None)
+        _rigid_objs = getattr(_scene_cfg, "rigid_objects", None) or []
+        object_name = _rigid_objs[0].name if _rigid_objs else "object"
+        asset_cfg = SceneEntityCfg(object_name, body_names=".*")
         asset_cfg.resolve(simulator.scene)
 
         ordering = ["Ixx", "Iyy", "Izz", "Ixy", "Iyz", "Ixz"]

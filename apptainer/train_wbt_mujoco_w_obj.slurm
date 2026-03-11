@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=g1_fastsac_train
+#SBATCH --job-name=g1_wbt_mjwarp_wobj
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 #SBATCH --time=2-00:00:00
@@ -7,7 +7,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH -p willow
 #SBATCH -A willow
 
@@ -36,8 +36,18 @@ apptainer exec --nv --writable-tmpfs \
     export WANDB_INSECURE_DISABLE_SSL=true && \
     cd /workspace/holosoma && \
     python src/holosoma/holosoma/train_agent.py \
-        exp:g1-29dof \
-        simulator:mjwarp \
+        exp:g1-29dof-wbt-w-object \
+        simulator:mjwarp-w-object \
         logger:wandb \
-        --logger.video.enabled=False
+        terrain:terrain-locomotion-plane \
+        --logger.video.enabled=False \
+        --simulator.config.debug-viz=False \
+        --simulator.config.mujoco-warp.ccd-iterations=200 \
+        --training.num-envs=8192 \
+        --command.setup-terms.motion-command.params.motion-config.motion-file=\"holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz\" \
+        --simulator.config.scene.rigid-objects.0.name=\"largebox\" \
+        --simulator.config.scene.rigid-objects.0.urdf-path=\"src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf\" \
+        --simulator.config.scene.rigid-objects.0.position=\"[1.0,0.0,1.0]\" \
+        --terrain.terrain-term.mesh-type=\"PLANE\" \
+        --terrain.terrain-term.obj-file-path=\"\"
 "
