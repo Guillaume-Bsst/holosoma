@@ -539,11 +539,14 @@ class MotionCommand(CommandTermBase):
             anchored_obj_pos = target_root_pos + rotated_rel_pos  # (num_envs, 3)
 
             # 4.2 Local object noise with batched rejection sampling.
-            # The noise amplitude is scaled by grasp_mask: zero perturbation when grasping.
+            # Scaled by both grasp_mask (hand proximity) and body_prox_mask (any-body proximity).
+            # body_prox_mask suppresses object noise when any robot body is near the box, so that
+            # noise cannot push the box into the robot's geometry from a valid reference position.
             obj_pos_noise = (
                 torch.tensor(self.init_pose_cfg.object_pos, device=self.device)
                 * self.init_pose_cfg.overall_noise_scale
-                * grasp_mask.unsqueeze(1)  # (num_envs, 3)
+                * grasp_mask.unsqueeze(1)      # zero when hands are grasping
+                * body_prox_mask.unsqueeze(1)  # zero when any body is near the object
             )
             K = self.init_pose_cfg.object_noise_num_proposals
             num_reset = len(env_ids)
