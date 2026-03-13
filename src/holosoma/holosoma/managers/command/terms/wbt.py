@@ -355,6 +355,9 @@ class MotionCommand(CommandTermBase):
                 SimulatorType.MUJOCO,
             ), "Object interaction is only supported in IsaacSim and MuJoCo"
 
+            # Auto-detect object radius for collision checking
+            self.object_collision_radius = self._autodetect_object_radius()
+
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
@@ -567,22 +570,22 @@ class MotionCommand(CommandTermBase):
 
             # 4.3 Geometric collision filter: reject proposals that penetrate torso capsules.
             capsules = self._get_torso_capsules_world(env_ids, target_root_pos, root_rot, target_root_rot)
-            valid_mask = self._check_object_no_collision(candidate_positions, capsules)  # (num_envs, K) bool
+            margins = self._compute_proposals_margin(candidate_positions, capsules)  # (N, K)
 
-            # 4.4 Select the first valid proposal per environment.
-            # If ALL K proposals collide (including zero-noise slot 0), anchored_obj_pos itself
-            # is inside a capsule — fall back to the raw reference motion position (obj_pos),
-            # which is guaranteed physically valid since it originates from motion-capture data.
+            # 4.4 Select proposal:
+            # Priority 1: First valid proposal (margin > 0)
+            # Priority 2: Least violating proposal (max margin) to minimize penetration
+            valid_mask = margins > 0.0
             has_valid = valid_mask.any(dim=1)  # (num_envs,)
+
             first_valid_idx = torch.argmax(valid_mask.float(), dim=1)  # (num_envs,)
+            best_fallback_idx = torch.argmax(margins, dim=1)  # (num_envs,)
+
+            selected_idx = torch.where(has_valid, first_valid_idx, best_fallback_idx)
             selected_world_noise = world_proposals[
-                torch.arange(num_reset, device=self.device), first_valid_idx
+                torch.arange(num_reset, device=self.device), selected_idx
             ]  # (num_envs, 3)
-            target_obj_pos = torch.where(
-                has_valid.unsqueeze(1),
-                anchored_obj_pos + selected_world_noise,
-                obj_pos,  # absolute fallback: reference motion position, no root-noise adaptation
-            )
+            target_obj_pos = anchored_obj_pos + selected_world_noise
 
             object_states = torch.cat(
                 [target_obj_pos, obj_ori, obj_lin_vel, torch.zeros_like(obj_lin_vel)], dim=-1
@@ -967,24 +970,91 @@ class MotionCommand(CommandTermBase):
 
         return capsules
 
-    def _check_object_no_collision(
+    def _compute_proposals_margin(
         self,
         candidate_positions: torch.Tensor,  # (N, K, 3)
         capsules: list[tuple[torch.Tensor, torch.Tensor, float]],
     ) -> torch.Tensor:
-        """Return (N, K) bool: True = proposal is free of capsule collisions.
+        """Return (N, K) margins. Positive = safe, Negative = penetration.
 
-        If no capsules are defined, all proposals are considered valid.
+        If no capsules are defined, returns infinity (safe).
         """
         N, K, _ = candidate_positions.shape
-        valid = torch.ones(N, K, dtype=torch.bool, device=self.device)
-        obj_r = self.init_pose_cfg.object_collision_radius
+        # Initialize with infinity (safe)
+        min_margins = torch.full((N, K), float("inf"), device=self.device)
+
+        if not capsules:
+            return min_margins
+
+        obj_r = getattr(self, "object_collision_radius", self.init_pose_cfg.object_collision_radius)
         for start_w, end_w, cap_r in capsules:
             seg_start = start_w.unsqueeze(1).expand(-1, K, -1)  # (N, K, 3)
             seg_end = end_w.unsqueeze(1).expand(-1, K, -1)  # (N, K, 3)
             dist = _point_to_segment_distance(candidate_positions, seg_start, seg_end)  # (N, K)
-            valid = valid & (dist > (cap_r + obj_r))
-        return valid
+            # Margin for this capsule: distance - min_safe_dist
+            # If dist < min_safe_dist, margin is negative (penetration)
+            margin = dist - (cap_r + obj_r)
+            # We care about the *worst* margin across all capsules for a given proposal
+            min_margins = torch.minimum(min_margins, margin)
+
+        return min_margins
+
+    def _autodetect_object_radius(self) -> float:
+        """Auto-detect object radius from simulator geometry."""
+        # Start with config value as fallback
+        radius = self.init_pose_cfg.object_collision_radius
+
+        try:
+            simulator = self._env.simulator
+            sim_type = simulator.get_simulator_type()
+
+            if sim_type == SimulatorType.ISAACSIM:
+                from pxr import Usd, UsdGeom
+                import omni.usd
+                import numpy as np
+
+                stage = omni.usd.get_context().get_stage()
+                # Find the object prim path for env 0.
+                # The object wrapper in IsaacLab is at simulator.scene.rigid_objects[self.object_name]
+                obj_wrapper = simulator.scene.rigid_objects[self.object_name]
+                # The cfg has the prim_path regex, e.g. "/World/envs/env_.*/Object"
+                prim_path = obj_wrapper.cfg.prim_path.replace(".*", "0")
+
+                prim = stage.GetPrimAtPath(prim_path)
+                if prim.IsValid():
+                    # Compute bounding box using BBoxCache to include children and transforms
+                    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+                    bound = bbox_cache.ComputeWorldBound(prim)
+                    range_ = bound.ComputeAlignedBox()
+                    size = np.array(range_.GetSize())
+                    # Use the bounding sphere radius (half diagonal)
+                    detected_radius = float(np.linalg.norm(size) / 2.0)
+                    logger.info(f"Auto-detected object radius (Isaac): {detected_radius:.4f} m")
+                    return detected_radius
+
+            elif sim_type == SimulatorType.MUJOCO:
+                import mujoco
+                model = simulator.backend.model
+
+                # Find body ID
+                body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, self.object_name)
+                if body_id == -1:
+                    # Fallback to generic name if specific name not found
+                    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
+
+                if body_id != -1:
+                    max_rbound = 0.0
+                    for i in range(model.ngeom):
+                        if model.geom_bodyid[i] == body_id:
+                            max_rbound = max(max_rbound, model.geom_rbound[i])
+                    if max_rbound > 0:
+                        logger.info(f"Auto-detected object radius (MuJoCo): {max_rbound:.4f} m")
+                        return float(max_rbound)
+
+        except Exception as e:
+            logger.warning(f"Could not auto-detect object radius: {e}")
+
+        return radius
 
     # ------------------------------------------------------------------ #
 
