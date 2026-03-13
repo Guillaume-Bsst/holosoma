@@ -61,6 +61,13 @@ motion_config = MotionConfig(
 motion_config_w_object = replace(
     motion_config,
     motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz",
+    # Disable prepend/append transitions when an object is present.
+    # The transition interpolates the robot from its default upright pose to the motion-start pose
+    # while the object stays fixed at its motion-start position (on the floor, near the robot).
+    # Intermediate frames have the upright robot's legs passing through the stationary box,
+    # creating physically invalid states that cause MuJoCo contact explosions when sampled.
+    enable_default_pose_prepend=False,
+    enable_default_pose_append=False,
 )
 
 g1_29dof_wbt_command = CommandManagerCfg(
