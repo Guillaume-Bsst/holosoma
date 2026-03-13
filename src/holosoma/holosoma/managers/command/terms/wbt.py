@@ -537,11 +537,14 @@ class MotionCommand(CommandTermBase):
             )
             K = self.init_pose_cfg.object_noise_num_proposals
             num_reset = len(env_ids)
-            # Generate K proposals in the robot local frame.
+            # Generate K-1 random proposals in the robot local frame.
+            # Proposal 0 is always zero noise (= anchored_obj_pos) so the no-noise position is
+            # explicitly tested by the collision filter rather than used blindly as fallback.
             local_proposals = (
                 (torch.rand((num_reset, K, 3), device=self.device) - 0.5) * 2
                 * obj_pos_noise.unsqueeze(1)  # broadcast: (num_envs, K, 3)
             )
+            local_proposals[:, 0, :] = 0.0  # slot 0 = zero noise = anchored_obj_pos
             # Rotate proposals into world frame using the noisy root orientation.
             target_root_rot_exp = target_root_rot.unsqueeze(1).expand(-1, K, -1).reshape(-1, 4)
             world_proposals = quat_apply(
@@ -553,15 +556,19 @@ class MotionCommand(CommandTermBase):
             capsules = self._get_torso_capsules_world(env_ids, target_root_pos, root_rot, target_root_rot)
             valid_mask = self._check_object_no_collision(candidate_positions, capsules)  # (num_envs, K) bool
 
-            # 4.4 Select the first valid proposal per environment; fall back to zero local noise
-            # (anchored_obj_pos) if all K proposals collide.
+            # 4.4 Select the first valid proposal per environment.
+            # If ALL K proposals collide (including zero-noise slot 0), anchored_obj_pos itself
+            # is inside a capsule — fall back to the raw reference motion position (obj_pos),
+            # which is guaranteed physically valid since it originates from motion-capture data.
             has_valid = valid_mask.any(dim=1)  # (num_envs,)
             first_valid_idx = torch.argmax(valid_mask.float(), dim=1)  # (num_envs,)
             selected_world_noise = world_proposals[
                 torch.arange(num_reset, device=self.device), first_valid_idx
             ]  # (num_envs, 3)
             target_obj_pos = torch.where(
-                has_valid.unsqueeze(1), anchored_obj_pos + selected_world_noise, anchored_obj_pos
+                has_valid.unsqueeze(1),
+                anchored_obj_pos + selected_world_noise,
+                obj_pos,  # absolute fallback: reference motion position, no root-noise adaptation
             )
 
             object_states = torch.cat(

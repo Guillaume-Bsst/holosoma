@@ -20,15 +20,17 @@ init_pose_config = NoiseToInitialPoseConfig(
     grasp_mask_min_dist=0.10,
     grasp_mask_max_dist=0.40,
     # Capsule geometry for object-placement rejection sampling.
-    # Order: [torso spine, upper legs x2, lower legs x2]
+    # Upper-leg capsules start from hip_pitch_link (laterally offset from pelvis center) so
+    # the inter-leg space is NOT falsely covered.  Using pelvis as origin would place the
+    # capsule axis through the center and reject valid between-legs placements.
     torso_capsule_body_pairs=[
-        ["pelvis", "torso_link"],          # spine / waist volume
-        ["pelvis", "left_knee_link"],      # left upper leg
-        ["pelvis", "right_knee_link"],     # right upper leg
-        ["left_knee_link", "left_ankle_roll_link"],   # left lower leg
-        ["right_knee_link", "right_ankle_roll_link"],  # right lower leg
+        ["pelvis", "torso_link"],                              # spine / waist volume
+        ["left_hip_pitch_link", "left_knee_link"],            # left thigh (laterally offset)
+        ["right_hip_pitch_link", "right_knee_link"],          # right thigh (laterally offset)
+        ["left_knee_link", "left_ankle_roll_link"],           # left shin
+        ["right_knee_link", "right_ankle_roll_link"],         # right shin
     ],
-    torso_capsule_radii=[0.20, 0.12, 0.12, 0.08, 0.08],
+    torso_capsule_radii=[0.20, 0.09, 0.09, 0.07, 0.07],
     object_noise_num_proposals=5,
     object_collision_radius=0.05,
 )
