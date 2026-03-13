@@ -136,6 +136,7 @@ class MotionLoader:
     def extend_with_segments(self, segments: dict[str, torch.Tensor], prepend: bool) -> MotionLoader:
         """Merge interpolated segments with motion data, mutating this MotionLoader."""
         concat_targets = [
+            ("root_pos", "_root_free_joint_pos"),
             ("joint_pos", "_joint_pos"),
             ("joint_vel", "_joint_vel"),
             ("body_pos", "_body_pos_w"),
@@ -1084,6 +1085,7 @@ class MotionCommand(CommandTermBase):
     def _motion_state(self, idx: int, dtype: torch.dtype, device: torch.device) -> dict[str, torch.Tensor]:
         """Slice motion tensors at a given index into a state dict."""
         state = {
+            "root_pos": self.motion._root_free_joint_pos[idx].to(device=device, dtype=dtype),
             "joint_pos": self.motion._joint_pos[idx].to(device=device, dtype=dtype),
             "joint_vel": self.motion._joint_vel[idx].to(device=device, dtype=dtype),
             "body_pos": self.motion._body_pos_w[idx].to(device=device, dtype=dtype),
@@ -1102,6 +1104,7 @@ class MotionCommand(CommandTermBase):
     ) -> dict[str, torch.Tensor]:
         """Map default robot-state tensors into motion order for interpolation."""
         state = {
+            "root_pos": default_state["root_pos"].to(device=device, dtype=dtype).squeeze(0),
             "joint_pos": self._map_robot_joints_to_motion_order(
                 default_state["joint_pos"].to(device=device, dtype=dtype),
                 num_motion_joints=self.motion._joint_pos.shape[1],
@@ -1135,6 +1138,7 @@ class MotionCommand(CommandTermBase):
             return a.unsqueeze(0) + view * (b - a).unsqueeze(0)
 
         segments = {
+            "root_pos": _lerp(start["root_pos"], target["root_pos"], alphas_joint),
             "joint_pos": _lerp(start["joint_pos"], target["joint_pos"], alphas_joint),
             "joint_vel": _lerp(start["joint_vel"], target["joint_vel"], alphas_joint),
             "body_pos": _lerp(start["body_pos"], target["body_pos"], alphas_body),
