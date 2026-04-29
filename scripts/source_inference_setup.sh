@@ -8,10 +8,18 @@ source ${SCRIPT_DIR}/source_common.sh
 source ${CONDA_ROOT}/bin/activate hscinference
 export LD_LIBRARY_PATH=${LD_LIBRARY_PATH}:${CONDA_ROOT}/envs/hscinference/lib/python3.11/site-packages/lib
 
+_PYTHON=${CONDA_ROOT}/envs/hscinference/bin/python
+
 # Ensure holosoma_inference is installed (editable mode)
-if ! python -c "import holosoma_inference" 2>/dev/null; then
+if ! ${_PYTHON} -c "import holosoma_inference" 2>/dev/null; then
     echo "holosoma_inference not found — installing in editable mode..."
-    pip install -e ${SCRIPT_DIR}/../src/holosoma_inference
+    ${_PYTHON} -m pip install -e ${SCRIPT_DIR}/../src/holosoma_inference
+fi
+
+# Ensure tyro is installed
+if ! ${_PYTHON} -c "import tyro" 2>/dev/null; then
+    echo "tyro not found — installing..."
+    ${_PYTHON} -m pip install tyro
 fi
 
 # Check UFW status if ufw command exists (no sudo required)
