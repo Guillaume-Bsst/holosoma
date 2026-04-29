@@ -29,6 +29,7 @@ import numpy as np
 import rclpy
 from loguru import logger
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy
 from sensor_msgs.msg import Imu, JointState
 
 from holosoma_inference.config.config_types import RobotConfig
@@ -67,6 +68,11 @@ class ROS2Interface(BaseInterface):
         self._cmd_pub = self._node.create_publisher(JointState, "/holosoma/low_cmd", 10)
         self._gains_pub = self._node.create_publisher(JointState, "/holosoma/pd_gains", 10)
 
+        # Latched publisher: startup pose and gains for the bridge.
+        # TRANSIENT_LOCAL so the bridge receives it even if it subscribes after publication.
+        _latched_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL)
+        self._startup_pub = self._node.create_publisher(JointState, "/holosoma/startup_pose", _latched_qos)
+
         # Subscribers: robot state
         self._state_sub = self._node.create_subscription(
             JointState, "/holosoma/low_state", self._low_state_callback, 10
@@ -83,6 +89,22 @@ class ROS2Interface(BaseInterface):
             f"ROS2 topics: pub={self._cmd_pub.topic_name}, "
             f"sub=[{self._state_sub.topic_name}, {self._imu_sub.topic_name}]"
         )
+
+    def publish_startup_pose(self, pos, kp, kd):
+        """Publish stiff startup pose and gains once (latched) for the bridge.
+
+        pos/kp/kd are sequences in robot DOF order (same as dof_names).
+        The bridge subscribes with TRANSIENT_LOCAL and uses these to drive
+        the robot to the policy's initial pose before handing over control.
+        """
+        msg = JointState()
+        msg.header.stamp = self._node.get_clock().now().to_msg()
+        msg.name = list(self.robot_config.dof_names)
+        msg.position = list(pos)   # stiff_startup_pos
+        msg.velocity = list(kp)    # stiff_startup_kp  (KP in velocity field)
+        msg.effort   = list(kd)    # stiff_startup_kd  (KD in effort field)
+        self._startup_pub.publish(msg)
+        logger.info(f"Startup pose published on /holosoma/startup_pose ({len(pos)} DOF)")
 
     def _low_state_callback(self, msg: JointState):
         """Handle incoming joint state."""
