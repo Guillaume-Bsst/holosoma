@@ -27,7 +27,11 @@ if [[ ! -f $SENTINEL_FILE ]]; then
 
     # Decide installer name based on OS/arch
     if [[ "$OS_NAME" == "Linux" ]]; then
-      MINICONDA_INSTALLER="Miniconda3-latest-Linux-x86_64.sh"
+      if [[ "$ARCH_NAME" == "aarch64" ]]; then
+        MINICONDA_INSTALLER="Miniconda3-latest-Linux-aarch64.sh"
+      else
+        MINICONDA_INSTALLER="Miniconda3-latest-Linux-x86_64.sh"
+      fi
     elif [[ "$OS_NAME" == "Darwin" ]]; then
       if [[ "$ARCH_NAME" == "arm64" ]]; then
         # Apple Silicon
