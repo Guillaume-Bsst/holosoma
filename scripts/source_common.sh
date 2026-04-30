@@ -10,4 +10,6 @@ done
 PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '/miniforge3/' | grep -v '/miniconda3/' | tr '\n' ':' | sed 's/:$//')
 unset CONDA_EXE _CONDA_EXE _CONDA_ROOT CONDA_PREFIX CONDA_DEFAULT_ENV CONDA_SHLVL CONDA_PYTHON_EXE CONDA_PROMPT_MODIFIER
 
-source "$CONDA_ROOT/etc/profile.d/conda.sh"
+if [[ -f "$CONDA_ROOT/etc/profile.d/conda.sh" ]]; then
+    source "$CONDA_ROOT/etc/profile.d/conda.sh"
+fi
