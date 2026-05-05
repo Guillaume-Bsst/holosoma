@@ -19,6 +19,8 @@ def test_foot_lock_config_custom():
     cfg = FootLockConfig(enable=True, windows={"L_Toe": [(0, 10)]}, z_floor=0.1, tolerance=1e-2)
     assert cfg.enable is True
     assert cfg.windows == {"L_Toe": [(0, 10)]}
+    assert cfg.z_floor == pytest.approx(0.1)
+    assert cfg.tolerance == pytest.approx(1e-2)
 
 
 def test_self_collision_config_defaults():
@@ -34,6 +36,8 @@ def test_self_collision_config_custom():
     cfg = SelfCollisionConfig(enable=True, pairs=pairs, windows=[(0, 50)], tolerance=0.05)
     assert cfg.enable is True
     assert cfg.pairs == pairs
+    assert cfg.windows == [(0, 50)]
+    assert cfg.tolerance == pytest.approx(0.05)
 
 
 def test_omni_retargeter_config_has_foot_lock_field():
@@ -55,3 +59,11 @@ def test_omni_retargeter_config_custom_foot_lock():
     cfg = OmniRetargeterConfig(foot_lock=fl)
     assert cfg.foot_lock.enable is True
     assert cfg.foot_lock.windows == {"L_Toe": [(5, 20)]}
+
+
+def test_omni_retargeter_config_custom_self_collision():
+    sc = SelfCollisionConfig(enable=True, pairs=[("left_elbow_link", "left_knee_link")], tolerance=0.05)
+    cfg = OmniRetargeterConfig(self_collision=sc)
+    assert cfg.self_collision.enable is True
+    assert cfg.self_collision.pairs == [("left_elbow_link", "left_knee_link")]
+    assert cfg.self_collision.tolerance == pytest.approx(0.05)
