@@ -47,6 +47,8 @@ class OmniRetargeter(BaseRetargeter):
             "visualize": cfg.visualize,
             "debug": cfg.debug,
             "w_nominal_tracking_init": cfg.w_nominal_tracking_init,
+            "foot_lock": cfg.foot_lock,
+            "self_collision": cfg.self_collision,
         }
         if task_type == "climbing":
             kwargs["nominal_tracking_tau"] = cfg.nominal_tracking_tau
