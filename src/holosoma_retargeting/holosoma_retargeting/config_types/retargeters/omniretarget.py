@@ -6,7 +6,44 @@ Supports all task types: robot_only, object_interaction, climbing.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class FootLockConfig:
+    """Configuration for explicit frame-range based foot locking constraints."""
+
+    enable: bool = False
+    """Whether to enforce explicit frame-range based foot locking constraints."""
+
+    windows: dict[str, list[tuple[int, int]]] | None = None
+    """Per-foot inclusive frame windows for locking.
+    Example: {"L_Toe": [(30, 60)], "R_Toe": [(10, 20), (80, 95)]}"""
+
+    z_floor: float = 0.0
+    """Floor height used by Z pinning constraints."""
+
+    tolerance: float = 5e-3
+    """Tolerance for Z floor pinning constraints."""
+
+
+@dataclass(frozen=True)
+class SelfCollisionConfig:
+    """Configuration for self-collision avoidance constraints."""
+
+    enable: bool = False
+    """Whether to enforce self-collision constraints."""
+
+    pairs: list[tuple[str, str]] = field(default_factory=list)
+    """Body name pairs to check for self-collision.
+    Example: [("left_elbow_link", "left_knee_link"), ("left_wrist_yaw_link", "left_knee_link")]"""
+
+    windows: list[tuple[int, int]] | None = None
+    """Inclusive frame windows during which self-collision is enforced.
+    If None, enforced on all frames."""
+
+    tolerance: float = 0.02
+    """Minimum distance (meters) to maintain between body pairs."""
 
 
 @dataclass(frozen=True)
@@ -36,6 +73,12 @@ class OmniRetargeterConfig:
 
     foot_sticking_tolerance: float = 1e-3
     """Tolerance for foot sticking constraints in x, y."""
+
+    foot_lock: FootLockConfig = field(default_factory=FootLockConfig)
+    """Configuration for explicit frame-range based foot locking."""
+
+    self_collision: SelfCollisionConfig = field(default_factory=SelfCollisionConfig)
+    """Configuration for self-collision avoidance."""
 
     step_size: float = 0.2
     """Trust region for each SQP iteration."""
