@@ -31,14 +31,13 @@ if [[ ! -f $SENTINEL_FILE ]]; then
     MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba create -y -n $CONDA_ENV_NAME python=3.8 -c conda-forge --override-channels
   fi
 
-  source $CONDA_ROOT/bin/activate $CONDA_ENV_NAME
-
+  # source $CONDA_ROOT/bin/activate $CONDA_ENV_NAME
   # Install libstdcxx-ng to fix the error: `version `GLIBCXX_3.4.32' not found` on Ubuntu 24.04
-  conda install -c conda-forge -y libstdcxx-ng
+  MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba install -c conda-forge -y libstdcxx-ng --prefix $ENV_ROOT
 
   # Install ffmpeg for video encoding
-  conda install -c conda-forge -y ffmpeg
-  conda install -c conda-forge -y libiconv
+  MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba install -c conda-forge -y ffmpeg --prefix $ENV_ROOT
+  MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba install -c conda-forge -y libiconv --prefix $ENV_ROOT
 
   # Install Isaac Gym
   if [[ ! -d $WORKSPACE_DIR/isaacgym ]]; then
@@ -46,10 +45,10 @@ if [[ ! -f $SENTINEL_FILE ]]; then
     tar -xzf $WORKSPACE_DIR/IsaacGym_Preview_4_Package.tar.gz -C $WORKSPACE_DIR
   fi
   cd $WORKSPACE_DIR/isaacgym/python
-  $ENV_ROOT/bin/pip install -e .
+  pip install -e .
 
   # Install Holosoma
-  pip install -U pip
-  pip install -e $ROOT_DIR/src/holosoma[unitree]
+  $ENV_ROOT/bin/python -m pip install -U pip
+  $ENV_ROOT/bin/python -m pip install -e $ROOT_DIR/src/holosoma[unitree]
   touch $SENTINEL_FILE
 fi
