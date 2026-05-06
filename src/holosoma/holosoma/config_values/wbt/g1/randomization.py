@@ -31,7 +31,7 @@ robot_state_dr_at_setup = {
             "enable_link_mass": True,
             "link_mass_range": [0.95, 1.05],
             "enable_base_mass": True,
-            "added_mass_range": [-1.0, 2.0],
+            "added_mass_range": [0.0, 2.0],
             "enabled": True,
         },
     ),
@@ -80,7 +80,7 @@ base_setup_terms = {
     "push_randomizer_state": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:PushRandomizerState",
         params={
-            "push_interval_s": [1.0, 3.0],
+            "push_interval_s": [3.0, 6.0],
             "max_push_vel": [0.5, 0.5, 0.2, 0.52, 0.52, 0.78],
             "enabled": True,
         },
@@ -93,6 +93,13 @@ base_setup_terms = {
             "rfi_lim_range": [0.5, 1.5],
             "enable_pd_gain": True,
             "enable_rfi_lim": True,
+        },
+    ),
+    "setup_torque_rfi": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:setup_torque_rfi",
+        params={
+            "enabled": True,
+            "rfi_lim": 0.1,
         },
     ),
     "actuator_lag_state": RandomizationTermCfg(
@@ -127,6 +134,9 @@ base_reset_terms = {
     ),
     "actuator_lag_state": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:ActuatorLagState"
+    ),
+    "configure_torque_rfi": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:configure_torque_rfi",
     ),
     # TODO: what is the difference between reset and setup? for joint_pos_bias_range?
     "randomize_dof_state": RandomizationTermCfg(
