@@ -337,6 +337,51 @@ class ActuatorRandomizerState(RandomizationTermBase):
         return self.rfi_lim_scale
 
 
+class ActuatorLagState(RandomizationTermBase):
+    """Stateful per-environment actuator torque lag (first-order low-pass filter).
+
+    Applied torque: tau_out[t] = alpha * tau_pd[t] + (1 - alpha) * tau_out[t-1]
+    alpha=1 → no lag; alpha_range=[0.7, 1.0] gives a time constant of ~56–inf ms at 50 Hz.
+    """
+
+    def __init__(self, cfg: Any, env: Any):
+        super().__init__(cfg, env)
+        params = cfg.params or {}
+        alpha_range = params.get("alpha_range", [1.0, 1.0])
+        self.alpha_range: list[float] = [float(alpha_range[0]), float(alpha_range[1])]
+        self.enabled: bool = bool(params.get("enabled", True))
+        self.lag_alpha: torch.Tensor | None = None
+
+    def setup(self) -> None:
+        env = self.env
+        self.lag_alpha = torch.ones(env.num_envs, env.num_dof, dtype=torch.float32, device=env.device)
+        term = _get_joint_action_term(env)
+        if term is not None:
+            term.attach_torque_lag_alpha(self.lag_alpha)
+        else:
+            logger.debug(
+                "JointPositionActionTerm not ready during ActuatorLagState.setup(); "
+                "will attach shared torque lag alpha once its setup() runs."
+            )
+
+    def reset(self, env_ids: torch.Tensor | None) -> None:
+        if self.lag_alpha is None:
+            raise RuntimeError("ActuatorLagState.setup() must be called before reset().")
+        if not self.enabled:
+            return
+        idx = _ensure_env_ids_tensor(self.env, env_ids)
+        if idx.numel() == 0:
+            return
+        self.lag_alpha[idx] = torch_rand_float(
+            self.alpha_range[0], self.alpha_range[1],
+            (idx.shape[0], self.env.num_dof),
+            device=self.env.device,
+        )
+
+    def step(self) -> None:
+        pass
+
+
 def setup_action_delay_buffers(env, *, ctrl_delay_step_range: Sequence[int], enabled: bool = True, **_) -> None:
     """Initialize action delay index buffer during setup.
 
@@ -1352,6 +1397,88 @@ def randomize_object_rigid_body_inertia_startup(
     else:
         raise RandomizerNotSupportedError(
             f"randomize_object_rigid_body_inertia_startup not supported for {type(simulator).__name__}"
+        )
+
+
+@mujoco_required_field("body_inertia")
+def randomize_robot_link_inertia_startup(
+    env,
+    env_ids: Sequence[int] | torch.Tensor | None = None,
+    *,
+    inertia_scale_range: Sequence[float] = (1.0, 1.0),
+    enabled: bool = True,
+    **_,
+) -> None:
+    """Randomize robot link inertia tensors (Ixx, Iyy, Izz) at startup.
+
+    Uses SCALE operation: e.g. [0.9, 1.1] = 90–110% of nominal inertia.
+    In IsaacGym this is a no-op because recomputeInertia=True in randomize_mass_startup
+    already updates inertia proportionally to mass changes.
+    """
+    if not enabled:
+        return
+
+    logger.info(f"[Randomization] Robot link inertia: scale={inertia_scale_range}")
+
+    idx = _ensure_env_ids_tensor(env, env_ids)
+    if idx.numel() == 0:
+        return
+
+    simulator = env.simulator
+    low, high = float(inertia_scale_range[0]), float(inertia_scale_range[1])
+
+    if hasattr(simulator, "gym"):
+        # IsaacGym recomputes inertia from mass when recomputeInertia=True in
+        # randomize_mass_startup — independent inertia randomization is not supported.
+        logger.debug("[Randomization] Robot link inertia randomization skipped for IsaacGym.")
+        return
+
+    elif simulator.__class__.__name__ == "IsaacSim":
+        try:
+            from isaaclab.managers import SceneEntityCfg
+        except ImportError as exc:  # pragma: no cover - defensive
+            raise RuntimeError("IsaacSim inertia randomization requires isaaclab.") from exc
+
+        from holosoma.simulator.isaacsim.events import randomize_rigid_body_inertia
+
+        env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
+        if env_ids_cpu.numel() == 0:
+            return
+
+        # Randomize diagonal inertia terms (Ixx, Iyy, Izz) with the same range;
+        # off-diagonal terms (Ixy, Iyz, Ixz) are left at 1.0 (no change).
+        lower = torch.tensor([low, low, low, 1.0, 1.0, 1.0], dtype=torch.float, device="cpu")
+        upper = torch.tensor([high, high, high, 1.0, 1.0, 1.0], dtype=torch.float, device="cpu")
+        inertia_distribution_params = (lower, upper)
+
+        asset_cfg = SceneEntityCfg("robot", body_names=env.robot_config.randomize_link_body_names)
+        asset_cfg.resolve(simulator.scene)
+        randomize_rigid_body_inertia(
+            simulator,
+            env_ids_cpu,
+            asset_cfg,
+            inertia_distribution_params,
+            operation="scale",
+            distribution="uniform",
+        )
+
+    elif simulator.simulator_config.mujoco_backend == MujocoBackend.WARP:
+        from holosoma.simulator.mujoco.backends.warp_randomization import randomize_field
+
+        ranges_dict = {0: (low, high), 1: (low, high), 2: (low, high)}
+        randomize_field(
+            simulator,
+            field=getattr(randomize_robot_link_inertia_startup, MUJOCO_FIELD_ATTR),
+            ranges=ranges_dict,
+            env_ids=idx,
+            entity_names=env.robot_config.randomize_link_body_names,
+            entity_type="body",
+            operation="scale",
+        )
+
+    else:  # pragma: no cover - defensive
+        raise RandomizerNotSupportedError(
+            f"Robot link inertia randomization not supported for simulator type '{type(simulator).__name__}'."
         )
 
 

@@ -44,6 +44,11 @@ class JointPositionActionTerm(ActionTermBase):
         # Initialize torque buffer
         self.torques = torch.zeros(env.num_envs, self._action_dim, device=env.device)
 
+        # First-order torque lag filter: tau_out[t] = alpha * tau_pd[t] + (1-alpha) * tau_out[t-1]
+        # alpha=1.0 means no lag; set by ActuatorLagState via attach_torque_lag_alpha()
+        self._torque_filtered = torch.zeros(env.num_envs, self._action_dim, device=env.device)
+        self._torque_lag_alpha = torch.ones(env.num_envs, self._action_dim, device=env.device)
+
         # Cache previous DOF velocities for derivative control
         self._prev_dof_vel = torch.zeros(env.num_envs, env.num_dof, device=env.device)
 
@@ -145,11 +150,14 @@ class JointPositionActionTerm(ActionTermBase):
 
     def apply_actions(self) -> None:
         """Apply processed actions by computing and applying torques."""
-        # Compute torques using PD controller
-        self.torques[:] = self._compute_torques(self._actions_after_delay)
-        # Apply torques to simulator
+        raw_torques = self._compute_torques(self._actions_after_delay)
+        # First-order lag: tau_out = alpha * tau_pd + (1 - alpha) * tau_out_prev
+        self._torque_filtered[:] = (
+            self._torque_lag_alpha * raw_torques
+            + (1.0 - self._torque_lag_alpha) * self._torque_filtered
+        )
+        self.torques[:] = self._torque_filtered
         self.env.simulator.apply_torques_at_dof(self.torques)
-        # Cache velocities for next derivative computation
         self._prev_dof_vel.copy_(self.env.simulator.dof_vel)
 
     def _compute_torques(self, actions: torch.Tensor) -> torch.Tensor:
@@ -213,11 +221,13 @@ class JointPositionActionTerm(ActionTermBase):
             else:
                 self.action_queue[env_ids] = 0.0
 
-        # Reset torques
+        # Reset torques and lag filter state
         if env_ids is None:
             self.torques.zero_()
+            self._torque_filtered.zero_()
         else:
             self.torques[env_ids] = 0.0
+            self._torque_filtered[env_ids] = 0.0
 
         # Reset cached velocities
         if env_ids is None:
@@ -235,6 +245,10 @@ class JointPositionActionTerm(ActionTermBase):
         self._kp_scale = kp_scale
         self._kd_scale = kd_scale
         self._rfi_lim_scale = rfi_lim_scale
+
+    def attach_torque_lag_alpha(self, lag_alpha: torch.Tensor) -> None:
+        """Attach shared torque lag alpha tensor provided by ActuatorLagState."""
+        self._torque_lag_alpha = lag_alpha
 
     def update_pd_scales(self, env_ids: torch.Tensor, kp_values: torch.Tensor, kd_values: torch.Tensor) -> None:
         """Fallback PD-scale update when no shared buffers are registered."""

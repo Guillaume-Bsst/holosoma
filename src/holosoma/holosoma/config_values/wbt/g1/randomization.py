@@ -35,6 +35,13 @@ robot_state_dr_at_setup = {
             "enabled": True,
         },
     ),
+    "randomize_robot_link_inertia_startup": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:randomize_robot_link_inertia_startup",
+        params={
+            "inertia_scale_range": [0.9, 1.1],
+            "enabled": True,
+        },
+    ),
 }
 
 object_state_dr_at_setup = {
@@ -88,6 +95,13 @@ base_setup_terms = {
             "enable_rfi_lim": True,
         },
     ),
+    "actuator_lag_state": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:ActuatorLagState",
+        params={
+            "alpha_range": [0.7, 1.0],
+            "enabled": True,
+        },
+    ),
     "setup_action_delay_buffers": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:setup_action_delay_buffers",
         params={
@@ -110,6 +124,9 @@ base_reset_terms = {
     ),
     "actuator_randomizer_state": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:ActuatorRandomizerState"
+    ),
+    "actuator_lag_state": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:ActuatorLagState"
     ),
     # TODO: what is the difference between reset and setup? for joint_pos_bias_range?
     "randomize_dof_state": RandomizationTermCfg(
