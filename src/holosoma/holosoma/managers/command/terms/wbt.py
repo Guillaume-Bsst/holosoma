@@ -1022,6 +1022,14 @@ class MotionCommand(CommandTermBase):
         self.metrics["motion/error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
         self.metrics["motion/error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
 
+        # MPJPE: Mean Per Joint Position Error (radians), averaged over joints
+        self.metrics["motion/mpjpe"] = (self.joint_pos - self.robot_joint_pos).abs().mean(dim=-1)
+
+        # MPKPE: Mean Per Keypoint Position Error (metres), averaged over tracked bodies
+        self.metrics["motion/mpkpe"] = torch.norm(
+            self.body_pos_relative_w - self.robot_body_pos_w, dim=-1
+        ).mean(dim=-1)
+
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler.get_stats()
             self.metrics["motion/adaptive_timesteps_sampler_entropy"] = self.adaptive_timesteps_sampler.metrics[
