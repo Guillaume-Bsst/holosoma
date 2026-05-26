@@ -143,6 +143,104 @@ g1_29dof = RobotConfig(
 
 
 # =============================================================================
+# G1 27-DOF Robot Config (waist_roll and waist_pitch locked)
+# =============================================================================
+
+# fmt: off
+g1_27dof = RobotConfig(
+    # Identity
+    robot_type="g1_27dof",
+    robot="g1",
+
+    # SDK Configuration
+    sdk_type="unitree",
+    motor_type="serial",
+    message_type="HG",
+    use_sensor=False,
+
+    # Dimensions
+    num_motors=27,
+    num_joints=27,
+    num_upper_body_joints=14,
+
+    # Default Positions (29-DOF minus waist_roll and waist_pitch)
+    default_dof_angles=(
+        -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,  # left leg
+        -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,  # right leg
+        0.0,                                      # waist (yaw only)
+        0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,      # left arm
+        0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,     # right arm
+    ),
+    default_motor_angles=(
+        -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,  # left leg
+        -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,  # right leg
+        0.0,                                      # waist (yaw only)
+        0.2, 0.2, 0.0, 0.6, 0.0, 0.0, 0.0,      # left arm
+        0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,     # right arm
+    ),
+
+    # Mappings
+    motor2joint=tuple(range(27)),
+    joint2motor=tuple(range(27)),
+    dof_names=(
+        "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
+        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+        "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
+        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        "waist_yaw_joint",
+        "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint",
+        "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint",
+        "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+    ),
+    dof_names_upper_body=(
+        "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint",
+        "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+        "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint",
+        "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+    ),
+    dof_names_lower_body=(
+        "left_hip_yaw_joint", "left_hip_roll_joint", "left_hip_pitch_joint",
+        "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+        "right_hip_yaw_joint", "right_hip_roll_joint", "right_hip_pitch_joint",
+        "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+        "waist_yaw_joint",
+    ),
+
+    # Link Names
+    torso_link_name="waist_yaw_link",
+    left_hand_link_name="left_rubber_hand",
+    right_hand_link_name="right_rubber_hand",
+
+    # Unitree-Specific Constants
+    unitree_legged_const={
+        "HIGHLEVEL": 238,
+        "LOWLEVEL": 255,
+        "TRIGERLEVEL": 240,
+        "PosStopF": 2146000000.0,
+        "VelStopF": 16000.0,
+        "MODE_MACHINE": 5,
+        "MODE_PR": 0,
+    },
+    weak_motor_joint_index={
+        "left_hip_yaw_joint": 0, "left_hip_roll_joint": 1, "left_hip_pitch_joint": 2,
+        "left_knee_joint": 3, "left_ankle_pitch_joint": 4, "left_ankle_roll_joint": 5,
+        "right_hip_yaw_joint": 6, "right_hip_roll_joint": 7, "right_hip_pitch_joint": 8,
+        "right_knee_joint": 9, "right_ankle_pitch_joint": 10, "right_ankle_roll_joint": 11,
+        "waist_yaw_joint": 12,
+        "left_shoulder_pitch_joint": 13, "left_shoulder_roll_joint": 14,
+        "left_shoulder_yaw_joint": 15, "left_elbow_joint": 16,
+        "left_wrist_roll_joint": 17, "left_wrist_pitch_joint": 18, "left_wrist_yaw_joint": 19,
+        "right_shoulder_pitch_joint": 20, "right_shoulder_roll_joint": 21,
+        "right_shoulder_yaw_joint": 22, "right_elbow_joint": 23,
+        "right_wrist_roll_joint": 24, "right_wrist_pitch_joint": 25, "right_wrist_yaw_joint": 26,
+    },
+    motion={"body_name_ref": ["waist_yaw_link"]},
+)
+# fmt: on
+
+
+# =============================================================================
 # T1 Robot Config
 # =============================================================================
 
@@ -229,6 +327,7 @@ t1_29dof = RobotConfig(
 # Core defaults - no extension imports at module load time
 DEFAULTS = {
     "g1-29dof": g1_29dof,
+    "g1-27dof": g1_27dof,
     "t1-29dof": t1_29dof,
 }
 """Dictionary of all available robot configurations.
