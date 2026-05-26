@@ -1104,8 +1104,92 @@ g1_29dof_w_object = replace(
     ),
 )
 
+def _remove_indices(lst: list, indices: set) -> list:
+    """Remove elements at the given indices from a list."""
+    return [v for i, v in enumerate(lst) if i not in indices]
+
+
+# G1 27-DOF: waist_roll (idx 13) and waist_pitch (idx 14) are locked/collapsed
+_WAIST_LOCKED_INDICES = {13, 14}
+_COLLAPSED_BODIES_27DOF = {"waist_roll_link", "torso_link"}
+
+g1_27dof = replace(
+    g1_29dof,
+    num_bodies=30,  # 32 - 2 (waist_roll_link + torso_link collapsed into waist_yaw_link)
+    dof_obs_size=27,
+    actions_dim=27,
+    body_names=[n for n in g1_29dof.body_names if n not in _COLLAPSED_BODIES_27DOF],
+    torso_name="waist_yaw_link",  # torso_link is collapsed; waist_yaw_link inherits its role
+    dof_names=_remove_indices(g1_29dof.dof_names, _WAIST_LOCKED_INDICES),
+    upper_dof_names=[
+        n for n in g1_29dof.upper_dof_names
+        if n not in ("waist_roll_joint", "waist_pitch_joint")
+    ],
+    lower_dof_names=g1_29dof.lower_dof_names,
+    dof_pos_lower_limit_list=_remove_indices(g1_29dof.dof_pos_lower_limit_list, _WAIST_LOCKED_INDICES),
+    dof_pos_upper_limit_list=_remove_indices(g1_29dof.dof_pos_upper_limit_list, _WAIST_LOCKED_INDICES),
+    dof_vel_limit_list=_remove_indices(g1_29dof.dof_vel_limit_list, _WAIST_LOCKED_INDICES),
+    dof_effort_limit_list=_remove_indices(g1_29dof.dof_effort_limit_list, _WAIST_LOCKED_INDICES),
+    dof_armature_list=_remove_indices(g1_29dof.dof_armature_list, _WAIST_LOCKED_INDICES),
+    dof_joint_friction_list=_remove_indices(g1_29dof.dof_joint_friction_list, _WAIST_LOCKED_INDICES),
+    init_state=RobotInitState(
+        pos=g1_29dof.init_state.pos,
+        rot=g1_29dof.init_state.rot,
+        lin_vel=g1_29dof.init_state.lin_vel,
+        ang_vel=g1_29dof.init_state.ang_vel,
+        default_joint_angles={
+            k: v for k, v in g1_29dof.init_state.default_joint_angles.items()
+            if k not in ("waist_roll_joint", "waist_pitch_joint")
+        },
+    ),
+    waist_dof_names=["waist_yaw_joint"],
+    waist_roll_dof_name=None,
+    waist_pitch_dof_name=None,
+    symmetry_joint_names={
+        k: v for k, v in (g1_29dof.symmetry_joint_names or {}).items()
+        if k not in ("waist_roll_joint", "waist_pitch_joint")
+        and v not in ("waist_roll_joint", "waist_pitch_joint")
+    },
+    flip_sign_joint_names=[
+        n for n in (g1_29dof.flip_sign_joint_names or [])
+        if n not in ("waist_roll_joint", "waist_pitch_joint")
+    ],
+    control=replace(
+        g1_29dof.control,
+        stiffness={
+            k: v for k, v in g1_29dof.control.stiffness.items()
+            if k not in ("waist_roll", "waist_pitch")
+        },
+        damping={
+            k: v for k, v in g1_29dof.control.damping.items()
+            if k not in ("waist_roll", "waist_pitch")
+        },
+    ),
+    asset=replace(
+        g1_29dof.asset,
+        urdf_file="g1/g1_27dof.urdf",
+        xml_file="g1/g1_27dof.xml",
+        robot_type="g1_27dof",
+    ),
+)
+
+g1_27dof_w_object = replace(
+    g1_27dof,
+    asset=replace(
+        g1_27dof.asset,
+        urdf_file="g1/main_mesh_collision_halfspherehand.urdf",
+    ),
+    control=replace(
+        g1_27dof.control,
+        action_scales_by_effort_limit_over_p_gain=True,
+        action_scale=0.25,
+    ),
+)
+
 DEFAULTS = {
     "g1_29dof": g1_29dof,
+    "g1_27dof": g1_27dof,
     "t1_29dof_waist_wrist": t1_29dof_waist_wrist,
     "g1_29dof_w_object": g1_29dof_w_object,
+    "g1_27dof_w_object": g1_27dof_w_object,
 }
