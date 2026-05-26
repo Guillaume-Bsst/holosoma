@@ -169,18 +169,31 @@ class RobotConfig:
         base: dict[str, float] = {"3": -1.0, "4": -1.0, "5": -1.0, "6": -1.0}  # quaternion bounds
 
         if self.robot_type == "g1":
-            base.update(
-                {
-                    "20": -0.3,  # waist roll
-                    "21": -0.1,  # waist pitch
-                    "26": -0.1,  # right wrist
-                    "27": -0.1,
-                    "28": -0.05,
-                    "33": -0.1,  # left wrist
-                    "34": -0.1,
-                    "35": -0.05,
-                }
-            )
+            if self.ROBOT_DOF == 29:
+                base.update(
+                    {
+                        "20": -0.3,  # waist roll
+                        "21": -0.1,  # waist pitch
+                        "26": -0.1,  # left wrist roll
+                        "27": -0.1,  # left wrist pitch
+                        "28": -0.05,  # left wrist yaw
+                        "33": -0.1,  # right wrist roll
+                        "34": -0.1,  # right wrist pitch
+                        "35": -0.05,  # right wrist yaw
+                    }
+                )
+            elif self.ROBOT_DOF == 27:
+                # waist_roll and waist_pitch removed; indices 20+ shift by -2
+                base.update(
+                    {
+                        "24": -0.1,  # left wrist roll
+                        "25": -0.1,  # left wrist pitch
+                        "26": -0.05,  # left wrist yaw
+                        "31": -0.1,  # right wrist roll
+                        "32": -0.1,  # right wrist pitch
+                        "33": -0.05,  # right wrist yaw
+                    }
+                )
 
         return base
 
@@ -194,19 +207,34 @@ class RobotConfig:
         base: dict[str, float] = {"3": 1.0, "4": 1.0, "5": 1.0, "6": 1.0}  # quaternion bounds
 
         if self.robot_type == "g1":
-            base.update(
-                {
-                    "20": 0.3,  # waist roll
-                    "25": 1.4,  # right elbow
-                    "26": 0.2,  # right wrist
-                    "27": 0.3,
-                    "28": 0.05,
-                    "32": 1.4,  # elbow
-                    "33": 0.2,  # left wrist
-                    "34": 0.3,
-                    "35": 0.05,
-                }
-            )
+            if self.ROBOT_DOF == 29:
+                base.update(
+                    {
+                        "20": 0.3,  # waist roll
+                        "25": 1.4,  # left elbow
+                        "26": 0.2,  # left wrist roll
+                        "27": 0.3,  # left wrist pitch
+                        "28": 0.05,  # left wrist yaw
+                        "32": 1.4,  # right elbow
+                        "33": 0.2,  # right wrist roll
+                        "34": 0.3,  # right wrist pitch
+                        "35": 0.05,  # right wrist yaw
+                    }
+                )
+            elif self.ROBOT_DOF == 27:
+                # waist_roll and waist_pitch removed; indices 20+ shift by -2
+                base.update(
+                    {
+                        "23": 1.4,  # left elbow
+                        "24": 0.2,  # left wrist roll
+                        "25": 0.3,  # left wrist pitch
+                        "26": 0.05,  # left wrist yaw
+                        "30": 1.4,  # right elbow
+                        "31": 0.2,  # right wrist roll
+                        "32": 0.3,  # right wrist pitch
+                        "33": 0.05,  # right wrist yaw
+                    }
+                )
 
         return base
 
@@ -218,6 +246,8 @@ class RobotConfig:
             return self.manual_cost
 
         if self.robot_type == "g1":
+            if self.ROBOT_DOF == 27:
+                return {"19": 0.2}  # waist yaw only (no waist roll)
             return {"19": 0.2, "20": 0.2}  # waist yaw, waist roll
         return {}
 

@@ -7,38 +7,47 @@ from dataclasses import dataclass, field
 from holosoma_retargeting.config_types.data_type import MotionDataConfig
 from holosoma_retargeting.config_types.robot import RobotConfig
 
-_ROBOT_JOINT_NAMES_DEFAULT = {
-    "g1": [
-        "left_hip_pitch_joint",
-        "left_hip_roll_joint",
-        "left_hip_yaw_joint",
-        "left_knee_joint",
-        "left_ankle_pitch_joint",
-        "left_ankle_roll_joint",
-        "right_hip_pitch_joint",
-        "right_hip_roll_joint",
-        "right_hip_yaw_joint",
-        "right_knee_joint",
-        "right_ankle_pitch_joint",
-        "right_ankle_roll_joint",
-        "waist_yaw_joint",
-        "waist_roll_joint",
-        "waist_pitch_joint",
-        "left_shoulder_pitch_joint",
-        "left_shoulder_roll_joint",
-        "left_shoulder_yaw_joint",
-        "left_elbow_joint",
-        "left_wrist_roll_joint",
-        "left_wrist_pitch_joint",
-        "left_wrist_yaw_joint",
-        "right_shoulder_pitch_joint",
-        "right_shoulder_roll_joint",
-        "right_shoulder_yaw_joint",
-        "right_elbow_joint",
-        "right_wrist_roll_joint",
-        "right_wrist_pitch_joint",
-        "right_wrist_yaw_joint",
-    ]
+_G1_29DOF_JOINT_NAMES = [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+]
+
+_G1_27DOF_JOINT_NAMES = [
+    n for n in _G1_29DOF_JOINT_NAMES if n not in ("waist_roll_joint", "waist_pitch_joint")
+]
+
+_ROBOT_JOINT_NAMES_DEFAULT: dict[str, dict[int, list[str]]] = {
+    "g1": {
+        29: _G1_29DOF_JOINT_NAMES,
+        27: _G1_27DOF_JOINT_NAMES,
+    },
 }
 
 
@@ -99,12 +108,20 @@ class DataConversionConfig:
     """Joint names to use."""
 
     def _joint_names(self) -> list[str]:
-        """Get joint names - use override if provided, else use default."""
+        """Get joint names - use override if provided, else use default based on robot and DOF."""
         if self.joint_names is not None:
             return self.joint_names
         if self.robot not in _ROBOT_JOINT_NAMES_DEFAULT:
             raise ValueError(f"No joint names found for robot: {self.robot}")
-        return _ROBOT_JOINT_NAMES_DEFAULT[self.robot]
+        dof_configs = _ROBOT_JOINT_NAMES_DEFAULT[self.robot]
+        robot_dof = self.robot_config.ROBOT_DOF
+        if robot_dof not in dof_configs:
+            available = ", ".join(str(d) for d in sorted(dof_configs.keys()))
+            raise ValueError(
+                f"No joint names found for robot '{self.robot}' with {robot_dof} DOF. "
+                f"Available DOF configs: {available}"
+            )
+        return dof_configs[robot_dof]
 
     JOINT_NAMES = property(
         _joint_names,
