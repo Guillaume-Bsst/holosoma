@@ -63,7 +63,7 @@ if [[ ! -f $SENTINEL_FILE ]]; then
     $CONDA_ROOT/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
     $CONDA_ROOT/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
     $CONDA_ROOT/bin/conda install -y mamba -c conda-forge -n base
-    MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba create -y -n $CONDA_ENV_NAME python=3.10 swig -c conda-forge --override-channels
+    MAMBA_ROOT_PREFIX=$CONDA_ROOT $CONDA_ROOT/bin/mamba create -y -n $CONDA_ENV_NAME python=3.11 swig -c conda-forge --override-channels
   fi
 
   source $CONDA_ROOT/bin/activate $CONDA_ENV_NAME
@@ -75,26 +75,12 @@ if [[ ! -f $SENTINEL_FILE ]]; then
   fi
 
   # Install holosoma_inference
-  # Note: On macOS, only Unitree SDK is supported (Booster SDK is Linux-only)
-  if [[ $OS == "Darwin" ]]; then
-    echo "Note: Installing Unitree SDK only (Booster SDK is not supported on macOS)"
-    pip install -e $ROOT_DIR/src/holosoma_inference[unitree]
-  else
-    pip install -e $ROOT_DIR/src/holosoma_inference[unitree,booster]
-  fi
-  # Setup a few things for ARM64 Linux (G1 Jetson)
-  # Otherwise we get this error:
-  # /opt/rh/gcc-toolset-14/root/usr/include/c++/14/bits/stl_vector.h:1130: ...
-  if [[ $OS == "Linux" && $ARCH == "aarch64" ]]; then
-    sudo nvpmodel -m 0 2>/dev/null || true
-    pip install pin>=3.8.0
-  else
-    if [[ ! -d $WORKSPACE_DIR/unitree_sdk2_python ]]; then
-      git clone https://github.com/unitreerobotics/unitree_sdk2_python.git $WORKSPACE_DIR/unitree_sdk2_python
-    fi
-    pip install -e $WORKSPACE_DIR/unitree_sdk2_python/
-    $CONDA_ROOT/bin/conda install pinocchio -y -c conda-forge --override-channels
-  fi
+  # We avoid [unitree] and [booster] extras as they contain Python 3.10-locked wheels.
+  # Instead, we rely on the ROS2-based interface which works with Python 3.11+.
+  pip install -e $ROOT_DIR/src/holosoma_inference
+
+  # Pinocchio installation
+  $CONDA_ROOT/bin/conda install pinocchio -y -c conda-forge --override-channels
 
   cd $ROOT_DIR
   touch $SENTINEL_FILE
