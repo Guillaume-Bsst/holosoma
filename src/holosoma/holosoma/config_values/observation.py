@@ -10,6 +10,9 @@ DEFAULTS = {
     "none": none,
     "t1_29dof_loco_single_wolinvel": t1_29dof_loco_single_wolinvel,
     "g1_29dof_loco_single_wolinvel": g1_29dof_loco_single_wolinvel,
+    "g1_27dof_loco_single_wolinvel": g1_29dof_loco_single_wolinvel,
     "g1_29dof_wbt": g1_29dof_wbt_observation,
+    "g1_27dof_wbt": g1_29dof_wbt_observation,
     "g1_29dof_wbt_w_object": g1_29dof_wbt_observation_w_object,
+    "g1_27dof_wbt_w_object": g1_29dof_wbt_observation_w_object,
 }

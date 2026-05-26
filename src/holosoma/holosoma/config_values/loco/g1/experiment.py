@@ -55,4 +55,16 @@ g1_29dof_fast_sac = ExperimentConfig(
     ),
 )
 
-__all__ = ["g1_29dof", "g1_29dof_fast_sac"]
+g1_27dof = replace(
+    g1_29dof,
+    training=replace(g1_29dof.training, name="g1_27dof_manager"),
+    robot=robot.g1_27dof,
+)
+
+g1_27dof_fast_sac = replace(
+    g1_29dof_fast_sac,
+    training=replace(g1_29dof_fast_sac.training, name="g1_27dof_fast_sac_manager"),
+    robot=robot.g1_27dof,
+)
+
+__all__ = ["g1_29dof", "g1_29dof_fast_sac", "g1_27dof", "g1_27dof_fast_sac"]

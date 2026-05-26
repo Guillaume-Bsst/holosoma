@@ -10,6 +10,9 @@ DEFAULTS = {
     "none": none,
     "t1_29dof": t1_29dof_randomization,
     "g1_29dof": g1_29dof_randomization,
+    "g1_27dof": g1_29dof_randomization,
     "g1_29dof_wbt": g1_29dof_wbt_randomization,
+    "g1_27dof_wbt": g1_29dof_wbt_randomization,
     "g1_29dof_wbt_w_object": g1_29dof_wbt_randomization_w_object,
+    "g1_27dof_wbt_w_object": g1_29dof_wbt_randomization_w_object,
 }

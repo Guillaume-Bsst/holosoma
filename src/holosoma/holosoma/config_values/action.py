@@ -9,4 +9,5 @@ DEFAULTS = {
     "none": none,
     "t1_29dof_joint_pos": t1_29dof_joint_pos,
     "g1_29dof_joint_pos": g1_29dof_joint_pos,
+    "g1_27dof_joint_pos": g1_29dof_joint_pos,
 }

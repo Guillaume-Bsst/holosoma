@@ -10,7 +10,10 @@ DEFAULTS = {
     "none": none,
     "t1_29dof": t1_29dof_curriculum,
     "g1_29dof": g1_29dof_curriculum,
+    "g1_27dof": g1_29dof_curriculum,
     "t1_29dof_fast_sac": t1_29dof_curriculum_fast_sac,
     "g1_29dof_fast_sac": g1_29dof_curriculum_fast_sac,
+    "g1_27dof_fast_sac": g1_29dof_curriculum_fast_sac,
     "g1_29dof_wbt_curriculum": g1_29dof_wbt_curriculum,
+    "g1_27dof_wbt_curriculum": g1_29dof_wbt_curriculum,
 }
