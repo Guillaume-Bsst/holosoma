@@ -76,7 +76,49 @@ g1_29dof_wbt_command_w_object = replace(
     },
 )
 
+# ── G1 27-DOF: torso_link is collapsed into waist_yaw_link ───────────────────
+
+motion_config_27dof = replace(
+    motion_config,
+    body_names_to_track=[
+        n if n != "torso_link" else "waist_yaw_link"
+        for n in motion_config.body_names_to_track
+    ],
+    body_name_ref=["waist_yaw_link"],
+)
+
+motion_config_27dof_w_object = replace(
+    motion_config_27dof,
+    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz",
+)
+
+g1_27dof_wbt_command = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_27dof,
+            },
+        ),
+    },
+)
+
+g1_27dof_wbt_command_w_object = replace(
+    g1_27dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_27dof_w_object,
+            },
+        ),
+    },
+)
+
 __all__ = [
     "g1_29dof_wbt_command",
     "g1_29dof_wbt_command_w_object",
+    "g1_27dof_wbt_command",
+    "g1_27dof_wbt_command_w_object",
 ]
