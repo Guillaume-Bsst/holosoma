@@ -50,6 +50,8 @@ class BasePolicy:
         self._init_obs_config()
         # Initialize communication components
         self._init_communication_components()
+        # Publish startup pose for the bridge (no-op for non-ROS2 interfaces)
+        self._publish_startup_pose()
         # Initialize policy components
         self._init_policy_components(
             self.config.task.model_path, self.config.task.policy_action_scale, self.config.task.rl_rate
@@ -158,6 +160,22 @@ class BasePolicy:
             self.config.task.domain_id,
             self.config.task.interface,
             need_joystick,
+        )
+
+    def _publish_startup_pose(self):
+        """Publish stiff startup pose/gains on /holosoma/startup_pose for the bridge."""
+        if self.robot_config.sdk_type != "ros2":
+            return
+        from holosoma_inference.sdk.ros2.ros2_interface import ROS2Interface
+        if not isinstance(self.interface, ROS2Interface):
+            return
+        robot = self.config.robot
+        if not (robot.stiff_startup_pos and robot.stiff_startup_kp and robot.stiff_startup_kd):
+            return
+        self.interface.publish_startup_pose(
+            robot.stiff_startup_pos,
+            robot.stiff_startup_kp,
+            robot.stiff_startup_kd,
         )
 
     def _init_policy_components(self, model_path, policy_action_scale, rl_rate):
