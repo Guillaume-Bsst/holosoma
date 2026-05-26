@@ -21,7 +21,7 @@ robot_state_dr_at_setup = {
     "setup_dof_pos_bias": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:setup_dof_pos_bias",
         params={
-            "dof_pos_bias_range": [-0.01, 0.01],
+            "dof_pos_bias_range": [-0.025, 0.025],
             "enabled": True,
         },
     ),
@@ -63,7 +63,7 @@ base_setup_terms = {
     "push_randomizer_state": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:PushRandomizerState",
         params={
-            "push_interval_s": [1.0, 3.0],
+            "push_interval_s": [3.0, 6.0],
             "max_push_vel": [0.5, 0.5, 0.2, 0.52, 0.52, 0.78],
             "enabled": True,
         },
@@ -73,16 +73,16 @@ base_setup_terms = {
         params={
             "kp_range": [0.9, 1.1],
             "kd_range": [0.9, 1.1],
-            "rfi_lim_range": [1.0, 1.0],
-            "enable_pd_gain": False,
-            "enable_rfi_lim": False,
+            "rfi_lim_range": [0.5, 1.5],
+            "enable_pd_gain": True,
+            "enable_rfi_lim": True,
         },
     ),
     "setup_action_delay_buffers": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:setup_action_delay_buffers",
         params={
-            "ctrl_delay_step_range": [0, 1],
-            "enabled": False,
+            "ctrl_delay_step_range": [0, 2],
+            "enabled": True,
         },
     ),
     **robot_state_dr_at_setup,
@@ -106,8 +106,8 @@ base_reset_terms = {
         params={
             "joint_pos_scale_range": [1.0, 1.0],
             "joint_vel_range": [0.0, 0.0],
-            "joint_pos_bias_range": [-0.01, 0.01],
-            "randomize_dof_pos_bias": False,
+            "joint_pos_bias_range": [-0.025, 0.025],
+            "randomize_dof_pos_bias": True,
         },
     ),
 }
