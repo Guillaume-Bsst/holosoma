@@ -28,6 +28,7 @@ from isaaclab.terrains import TerrainGeneratorCfg, TerrainImporterCfg
 from isaaclab.terrains.utils import create_prim_from_mesh
 from isaaclab.utils.timer import Timer
 from loguru import logger
+from pxr import Sdf, UsdPhysics
 from omegaconf import DictConfig
 
 from holosoma.utils.module_utils import get_holosoma_root
@@ -378,6 +379,20 @@ class IsaacSim(BaseSimulator):
         log_robot_properties("/World/envs/env_0/Robot", "*")
 
         self.scene.articulations["robot"] = self._robot
+
+        # Exclude pelvis / hip_roll collision pairs (IsaacSim does not read MuJoCo XML excludes)
+        stage = omni.usd.get_context().get_stage()
+        robot_path = "/World/envs/env_0/Robot"
+        pelvis_prim = stage.GetPrimAtPath(f"{robot_path}/pelvis")
+        l_hip_prim = stage.GetPrimAtPath(f"{robot_path}/left_hip_roll_link")
+        r_hip_prim = stage.GetPrimAtPath(f"{robot_path}/right_hip_roll_link")
+        if pelvis_prim.IsValid() and l_hip_prim.IsValid() and r_hip_prim.IsValid():
+            filtered_pairs_api = UsdPhysics.FilteredPairsAPI.Apply(pelvis_prim)
+            filtered_pairs_api.GetFilteredPairsRel().AddTarget(Sdf.Path(f"{robot_path}/left_hip_roll_link"))
+            filtered_pairs_api.GetFilteredPairsRel().AddTarget(Sdf.Path(f"{robot_path}/right_hip_roll_link"))
+            logger.info("Applied UsdPhysics.FilteredPairsAPI: pelvis / hip_roll collision excluded")
+        else:
+            logger.warning("FilteredPairsAPI: pelvis or hip_roll prims not found, skipping collision exclusion")
 
         self.contact_sensor = ContactSensor(contact_sensor_config)
         self.scene.sensors["contact_sensor"] = self.contact_sensor
