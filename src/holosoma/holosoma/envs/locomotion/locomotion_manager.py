@@ -177,6 +177,7 @@ class LeggedRobotLocomotionManager(BaseTask):
             self._pending_episode_update_mask[env_ids] = True
 
     def _update_log_dict(self):
+        super()._update_log_dict()
         avg = self._get_average_episode_tracker().get_average()
         self.log_dict["average_episode_length"] = avg.detach().cpu()
 

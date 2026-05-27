@@ -70,6 +70,7 @@ class WholeBodyTrackingManager(BaseTask):
 
     def _update_log_dict(self):
         # _update_log_dict happens before reset_envs_idx
+        super()._update_log_dict()
         # -------------------------------- terms same with locomotion_manager.py [start]--------------------------------
         avg = self._get_average_episode_tracker().get_average()
         self.log_dict["average_episode_length"] = avg.detach().cpu()
