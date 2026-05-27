@@ -40,6 +40,25 @@ actor_obs_shared = ObsGroupCfg(
     },
 )
 
+actor_obs_w_object = ObsGroupCfg(
+    concatenate=True,
+    enable_noise=True,
+    history_length=1,
+    terms={
+        **actor_obs_shared.terms,
+        "obj_pos_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:obj_pos_b",
+            scale=1.0,
+            noise=0.0,
+        ),
+        "obj_ori_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:obj_ori_b",
+            scale=1.0,
+            noise=0.0,
+        ),
+    },
+)
+
 critic_obs_shared_terms = {
     "motion_command": ObsTermCfg(
         func="holosoma.managers.observation.terms.wbt:motion_command",
@@ -138,4 +157,20 @@ g1_29dof_wbt_observation_w_object = ObservationManagerCfg(
     },
 )
 
-__all__ = ["g1_29dof_wbt_observation", "g1_29dof_wbt_observation_w_object"]
+g1_29dof_wbt_observation_w_object_actor = ObservationManagerCfg(
+    groups={
+        "actor_obs": actor_obs_w_object,
+        "critic_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=False,
+            history_length=1,
+            terms=critic_obs_w_object_terms,
+        ),
+    },
+)
+
+__all__ = [
+    "g1_29dof_wbt_observation",
+    "g1_29dof_wbt_observation_w_object",
+    "g1_29dof_wbt_observation_w_object_actor",
+]
