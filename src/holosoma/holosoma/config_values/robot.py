@@ -1109,17 +1109,17 @@ def _remove_indices(lst: list, indices: set) -> list:
     return [v for i, v in enumerate(lst) if i not in indices]
 
 
-# G1 27-DOF: waist_roll (idx 13) and waist_pitch (idx 14) are locked/collapsed
+# G1 27-DOF: waist_roll (idx 13) and waist_pitch (idx 14) joints become fixed in the URDF.
+# collapse_fixed_joints=False preserves waist_roll_link and torso_link as rigid bodies in the
+# simulator — no DOFs are added (fixed joints don't produce DOFs in PhysX), but the bodies
+# appear in robot_body_names, keeping the body list identical to 29-DOF.
 _WAIST_LOCKED_INDICES = {13, 14}
-_COLLAPSED_BODIES_27DOF = {"waist_roll_link", "torso_link"}
 
 g1_27dof = replace(
     g1_29dof,
-    num_bodies=30,  # 32 - 2 (waist_roll_link + torso_link collapsed into waist_yaw_link)
+    num_bodies=32,
     dof_obs_size=27,
     actions_dim=27,
-    body_names=[n for n in g1_29dof.body_names if n not in _COLLAPSED_BODIES_27DOF],
-    torso_name="waist_yaw_link",  # torso_link is collapsed; waist_yaw_link inherits its role
     dof_names=_remove_indices(g1_29dof.dof_names, _WAIST_LOCKED_INDICES),
     upper_dof_names=[
         n for n in g1_29dof.upper_dof_names
@@ -1170,6 +1170,7 @@ g1_27dof = replace(
         urdf_file="g1/g1_27dof.urdf",
         xml_file="g1/g1_27dof.xml",
         robot_type="g1_27dof",
+        collapse_fixed_joints=False,
     ),
 )
 

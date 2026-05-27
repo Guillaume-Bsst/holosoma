@@ -76,19 +76,10 @@ g1_29dof_wbt_command_w_object = replace(
     },
 )
 
-# ── G1 27-DOF: waist_roll/pitch joints are removed (locked) ──────────────────
-# - body_names_to_track replaces torso_link with waist_yaw_link: torso_link has
-#   no independent joints so tracking it would give no reward signal.
-# - body_name_ref stays torso_link: it still exists as a rigid body in the sim
-#   (welded to its parent) and gives a consistent reference frame with 29-DOF.
-
-motion_config_27dof = replace(
-    motion_config,
-    body_names_to_track=[
-        n if n != "torso_link" else "waist_yaw_link"
-        for n in motion_config.body_names_to_track
-    ],
-)
+# G1 27-DOF: waist_roll/pitch joints are fixed in the URDF; their bodies (waist_roll_link,
+# torso_link) are preserved as rigid bodies in the sim (collapse_fixed_joints=False).
+# body_names_to_track and body_name_ref are identical to 29-DOF.
+motion_config_27dof = motion_config
 
 motion_config_27dof_w_object = replace(
     motion_config_27dof,
