@@ -51,6 +51,8 @@ class TerminationManager:
         self.terminated = torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
         self.time_outs = torch.zeros_like(self.terminated)
 
+        self._step_log: dict[str, torch.Tensor] = {}
+
         self._initialize_terms()
 
     def _initialize_terms(self) -> None:
@@ -106,9 +108,16 @@ class TerminationManager:
             else:
                 reset_flags |= result
 
+            self._step_log[f"termination/{term_name}"] = result.float().mean()
+
         self.terminated = reset_flags.clone()
         self.time_outs = timeout_flags.clone()
         return reset_flags, timeout_flags
+
+    @property
+    def step_log(self) -> dict[str, torch.Tensor]:
+        """Per-term firing rates from the last call to check() (fraction of envs that triggered)."""
+        return self._step_log
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset stateful terms.

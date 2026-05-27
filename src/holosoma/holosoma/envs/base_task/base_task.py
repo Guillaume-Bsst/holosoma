@@ -548,4 +548,5 @@ class BaseTask:
 
     def _update_log_dict(self):
         """Hook for appending task-specific metrics to `self.log_dict` (no-op by default)."""
-        return
+        if self.termination_manager is not None:
+            self.log_dict.update(self.termination_manager.step_log)
