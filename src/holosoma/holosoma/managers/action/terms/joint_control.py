@@ -118,6 +118,9 @@ class JointPositionActionTerm(ActionTermBase):
         assert self._raw_actions is not None
         self._raw_actions[:] = actions
 
+        self.env.log_dict["action_mean_abs"] = actions.abs().mean()
+        self.env.log_dict["action_std"] = actions.std()
+
         # Clip actions
         if self.env.robot_config.control.clip_actions:
             clip_limit = self.env.robot_config.control.action_clip_value
