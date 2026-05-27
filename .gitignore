@@ -31,6 +31,9 @@ src/holosoma/holosoma/data/robots/converted_rank*/
 *.egg-info
 __pycache__
 
+# Design docs
+docs/
+
 # Gas Town (added by gt)
 .runtime/
 .claude/
