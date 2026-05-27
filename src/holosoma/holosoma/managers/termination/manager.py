@@ -91,6 +91,7 @@ class TerminationManager:
         """
         reset_flags = torch.zeros(self.env.num_envs, dtype=torch.bool, device=self.device)
         timeout_flags = torch.zeros_like(reset_flags)
+        all_results: dict[str, torch.Tensor] = {}
 
         for term_name, term_cfg in zip(self._term_names, self._term_cfgs):
             if term_name in self._term_instances:
@@ -108,15 +109,26 @@ class TerminationManager:
             else:
                 reset_flags |= result
 
-            self._step_log[f"termination/{term_name}"] = result.float().mean()
+            all_results[term_name] = result
 
         self.terminated = reset_flags.clone()
         self.time_outs = timeout_flags.clone()
+
+        # Log rates only among resetting envs so the accumulator isn't diluted by
+        # the majority of steps where nothing resets. Empty dict on non-reset steps
+        # means TensorAverageMeterDict.add() skips those steps entirely.
+        resetting = reset_flags | timeout_flags
+        if resetting.any():
+            for term_name, result in all_results.items():
+                self._step_log[f"termination/{term_name}"] = result[resetting].float().mean()
+        else:
+            self._step_log.clear()
+
         return reset_flags, timeout_flags
 
     @property
     def step_log(self) -> dict[str, torch.Tensor]:
-        """Per-term firing rates from the last call to check() (fraction of envs that triggered)."""
+        """Per-term firing rates among resetting envs from the last call to check()."""
         return self._step_log
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
