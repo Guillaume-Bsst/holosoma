@@ -193,6 +193,7 @@ g1_29dof_wbt_fast_sac_w_object = replace(
 
 g1_27dof_wbt = replace(
     g1_29dof_wbt,
+    training=replace(g1_29dof_wbt.training, name="g1_27dof_wbt_manager"),
     robot=replace(
         robot.g1_27dof,
         control=replace(robot.g1_27dof.control, action_scales_by_effort_limit_over_p_gain=True, action_scale=0.25),
