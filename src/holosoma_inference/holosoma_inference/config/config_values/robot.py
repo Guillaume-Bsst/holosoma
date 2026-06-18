@@ -208,7 +208,7 @@ g1_27dof = RobotConfig(
     ),
 
     # Link Names
-    torso_link_name="waist_yaw_link",
+    torso_link_name="torso_link",
     left_hand_link_name="left_rubber_hand",
     right_hand_link_name="right_rubber_hand",
 
@@ -235,7 +235,8 @@ g1_27dof = RobotConfig(
         "right_shoulder_yaw_joint": 22, "right_elbow_joint": 23,
         "right_wrist_roll_joint": 24, "right_wrist_pitch_joint": 25, "right_wrist_yaw_joint": 26,
     },
-    motion={"body_name_ref": ["waist_yaw_link"]},
+    motion={"body_name_ref": ["torso_link"]},
+    default_per_joint_action_scale=G1_29DOF_PER_JOINT_ACTION_SCALE[:13] + G1_29DOF_PER_JOINT_ACTION_SCALE[15:],
 )
 # fmt: on
 
