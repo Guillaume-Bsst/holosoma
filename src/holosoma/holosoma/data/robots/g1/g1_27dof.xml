@@ -34,10 +34,10 @@ Changed group of some visual geoms to support ray-tracing that passes through ro
             </default>
             <default class="ankle">
                 <default class="ankle_pitch">
-                    <joint axis="0 1 0" range="-0.87267 0.5236" actuatorfrcrange="-50 50" armature="0.00721945" damping="0.181"/>
+                    <joint axis="0 1 0" range="-0.87267 0.5236" actuatorfrcrange="-35 35" armature="0.00721945" damping="0.181"/>
                 </default>
                 <default class="ankle_roll">
-                    <joint axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-50 50" armature="0.00721945" damping="0.181"/>
+                    <joint axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-35 35" armature="0.00721945" damping="0.181"/>
                 </default>
             </default>
             <default class="waist_yaw">
@@ -267,6 +267,10 @@ Changed group of some visual geoms to support ray-tracing that passes through ro
                     <body name="torso_link">
                         <inertial pos="0.00203158 0.000339683 0.184568" quat="0.999803 -6.03319e-05 0.0198256 0.00131986"
                                 mass="7.818" diaginertia="0.121847 0.109825 0.0273735"/>
+                        <!-- Battery payload from native unitree_description g1.urdf: align with the real robot. -->
+                        <body name="battery" pos="0.01041 0.02276 0.13792">
+                            <inertial pos="0 0 0" mass="2.5" diaginertia="0.00975 0.004333333 0.008083333"/>
+                        </body>
                         <!-- waist_pitch_joint removed (locked in G1 base 27-DOF) -->
                         <geom class="visual" mesh="torso_link"/>
                         <geom pos="0.0039635 0 -0.044" quat="1 0 0 0" class="visual" material="black" mesh="logo_link"/>
