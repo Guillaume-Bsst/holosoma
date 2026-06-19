@@ -34,6 +34,14 @@ motion_config = MotionConfig(
     ],
     body_name_ref=["torso_link"],
     use_adaptive_timesteps_sampler=True,
+    # Re-enable the default-pose transitions and the initial-pose hold practice.
+    # Upstream commit 470fd78 (PR #95) flipped these dataclass defaults off; we restore them
+    # explicitly here so timestep 0 is a stable standing pose the policy learns to hold,
+    # which keeps the inference START hold ("]") parkable regardless of the clip's first frame.
+    enable_default_pose_prepend=True,
+    enable_default_pose_append=True,
+    start_at_timestep_zero_prob=0.2,
+    freeze_at_timestep_zero_prob=0.95,
     noise_to_initial_pose=init_pose_config,
 )
 
