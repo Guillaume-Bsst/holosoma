@@ -60,7 +60,7 @@ def limits_dof_pos(env: WholeBodyTrackingManager, soft_dof_pos_limit: float = 0.
 
     out_of_limits = -(env.simulator.dof_pos - lower_soft_limit).clip(max=0.0)  # lower limit
     out_of_limits += (env.simulator.dof_pos - upper_soft_limit).clip(min=0.0)
-    return torch.sum(out_of_limits**2 / r, dim=1)
+    return torch.sum(out_of_limits, dim=1)
 
 
 #########################################################################################################
