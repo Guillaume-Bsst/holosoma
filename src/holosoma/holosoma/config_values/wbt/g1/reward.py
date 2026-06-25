@@ -40,7 +40,7 @@ g1_29dof_wbt_reward = RewardManagerCfg(
         # Regularization rewards
         "action_rate_l2": RewardTermCfg(
             func="holosoma.managers.reward.terms.wbt:penalty_action_rate",
-            weight=-0.5,
+            weight=-0.1,
         ),
         "limits_dof_pos": RewardTermCfg(
             func="holosoma.managers.reward.terms.wbt:limits_dof_pos",

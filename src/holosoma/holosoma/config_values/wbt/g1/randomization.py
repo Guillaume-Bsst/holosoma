@@ -14,7 +14,7 @@ robot_state_dr_at_setup = {
     "randomize_base_com_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_base_com_startup",
         params={
-            "base_com_range": {"x": [-0.025, 0.025], "y": [-0.05, 0.05], "z": [-0.05, 0.05]},
+            "base_com_range": {"x": [-0.1, 0.1], "y": [-0.1, 0.1], "z": [-0.1, 0.1]},
             "enabled": True,
         },
     ),
@@ -64,7 +64,7 @@ base_setup_terms = {
         func="holosoma.managers.randomization.terms.locomotion:PushRandomizerState",
         params={
             "push_interval_s": [1.0, 3.0],
-            "max_push_vel": [0.5, 0.5, 0.2, 0.52, 0.52, 0.78],
+            "max_push_vel": [0.75, 0.75, 0.3, 0.52, 0.52, 0.78],
             "enabled": True,
         },
     ),
