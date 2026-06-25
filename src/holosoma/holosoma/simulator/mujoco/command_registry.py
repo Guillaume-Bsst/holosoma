@@ -43,11 +43,15 @@ class CommandRegistry:
 
         # Gantry commands (using new enum-based system with parameters)
         self.gantry_commands = {
-            glfw.KEY_7: GantryCommandData(GantryCommand.LENGTH_ADJUST, {"amount": -0.1}),
-            glfw.KEY_8: GantryCommandData(GantryCommand.LENGTH_ADJUST, {"amount": 0.1}),
+            glfw.KEY_7: GantryCommandData(GantryCommand.LENGTH_ADJUST, {"amount": -0.5}),
+            glfw.KEY_8: GantryCommandData(GantryCommand.LENGTH_ADJUST, {"amount": 0.5}),
             glfw.KEY_9: GantryCommandData(GantryCommand.TOGGLE),
             glfw.KEY_0: GantryCommandData(GantryCommand.FORCE_ADJUST),
             glfw.KEY_MINUS: GantryCommandData(GantryCommand.FORCE_SIGN_TOGGLE),
+            # Numpad equivalents — many keyboards send these codes for 7/8/9.
+            glfw.KEY_KP_7: GantryCommandData(GantryCommand.LENGTH_ADJUST, {"amount": -0.5}),
+            glfw.KEY_KP_8: GantryCommandData(GantryCommand.LENGTH_ADJUST, {"amount": 0.5}),
+            glfw.KEY_KP_9: GantryCommandData(GantryCommand.TOGGLE),
         }
 
     def execute_command(self, keycode: int) -> bool:
