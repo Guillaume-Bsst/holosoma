@@ -111,6 +111,14 @@ class MotionConfig:
     This makes the robot practice holding the initial pose. Only applies when episode starts at timestep 0.
     Sampled independently each policy step; expected wait is roughly 1 / (1 - p) steps before unfreezing."""
 
+    freeze_at_timestep_end_prob: float = 0.0
+    """Probability of freezing the motion counter at the LAST frame (motion_end_idx - 1, the appended
+    default pose) instead of advancing into the end-of-clip reset. Mirror of freeze_at_timestep_zero_prob
+    for the end of the clip, so the robot practices holding the final (stiff) pose. Without it the end
+    hold is never trained — the env resets the instant the counter reaches motion_end_idx — so holding
+    the final pose is out-of-distribution at inference. Sampled independently each policy step; expected
+    hold is roughly 1 / (1 - p) steps. Most useful together with enable_default_pose_append."""
+
     enable_default_pose_prepend: bool = False
     """If True, pre-append interpolated frames from default pose to the motion's first pose.
     This provides a smooth transition trajectory that the policy can track."""

@@ -42,6 +42,7 @@ motion_config = MotionConfig(
     enable_default_pose_append=True,
     start_at_timestep_zero_prob=0.2,
     freeze_at_timestep_zero_prob=0.95,
+    freeze_at_timestep_end_prob=0.95,  # symmetric end-of-clip hold: practice holding the final default pose
     noise_to_initial_pose=init_pose_config,
 )
 

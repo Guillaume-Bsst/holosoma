@@ -754,6 +754,19 @@ class MotionCommand(CommandTermBase):
                 freeze_mask = (rand_vals < freeze_prob) & zero_mask
                 advance_mask = advance_mask & ~freeze_mask
 
+        # Handle freeze_at_timestep_end_prob: mirror of the start freeze for the LAST frame
+        # (motion_end_idx - 1, the appended default pose). Without this the end-of-clip hold is
+        # never trained — the block below resets the instant the counter reaches motion_end_idx —
+        # so holding the final pose is out-of-distribution at inference. Randomly hold at the last
+        # frame instead of advancing into the reset, so the policy practices keeping the final pose.
+        end_freeze_prob = self.motion_cfg.freeze_at_timestep_end_prob
+        if end_freeze_prob > 0.0:
+            last_mask = self.time_steps == (self.motion.motion_end_idx[self.motion_ids] - 1)
+            if last_mask.any():
+                rand_vals = torch.rand(self.num_envs, device=self.device)
+                end_freeze_mask = (rand_vals < end_freeze_prob) & last_mask
+                advance_mask = advance_mask & ~end_freeze_mask
+
         self.time_steps += advance_mask.long()
 
         # BeyondMimic-style behavior: when the clip ends, resample motion and
