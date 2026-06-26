@@ -296,6 +296,12 @@ class BasePolicy:
         self.cmd_dq = np.zeros(self.num_dofs)
         self.cmd_tau = np.zeros(self.num_dofs)
 
+        # Dual-mode switch blend: smooths the one-step target jump when policies switch.
+        self._switch_blend_count = 0
+        self._switch_blend_steps = 0
+        self._switch_blend_from = None
+        self._last_cmd_q = None
+
     def _init_phase_components(self):
         """Initialize phase components."""
         self.use_phase = self.config.task.use_phase
@@ -663,6 +669,16 @@ class BasePolicy:
             return q_target
         return dof_pos
 
+    def begin_switch_blend(self, from_cmd_q, steps: int):
+        """Start blending the commanded joint target from `from_cmd_q` toward this policy's
+        own target over `steps` control steps. Called by the dual-mode handler right after a
+        policy switch so the sent command does not jump in a single step (esp. the arms)."""
+        if from_cmd_q is None or steps <= 0:
+            return
+        self._switch_blend_from = np.array(from_cmd_q, dtype=self.cmd_q.dtype).copy()
+        self._switch_blend_steps = int(steps)
+        self._switch_blend_count = int(steps)
+
     def policy_action(self):
         """Execute policy action and send commands to robot."""
 
@@ -713,7 +729,15 @@ class BasePolicy:
                 q_target = scaled_policy_action + self.default_dof_angles
 
             # Prepare command (reuse pre-allocated arrays)
-            self.cmd_q[:] = q_target[0] + self.joint_offsets
+            target_q = q_target[0] + self.joint_offsets
+            # Dual-mode switch: blend from the previous policy's last command toward this
+            # policy's target over a few steps so the sent target does not jump in one step.
+            if self._switch_blend_count > 0 and self._switch_blend_from is not None:
+                self._switch_blend_count -= 1
+                alpha = (self._switch_blend_steps - self._switch_blend_count) / self._switch_blend_steps
+                target_q = (1.0 - alpha) * self._switch_blend_from + alpha * target_q
+            self.cmd_q[:] = target_q
+            self._last_cmd_q = self.cmd_q.copy()
 
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
