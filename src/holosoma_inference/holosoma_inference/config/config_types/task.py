@@ -72,7 +72,7 @@ class TaskConfig:
     Cannot be combined with explicit input settings.
     """
 
-    switch_blend_steps: int = 15
+    switch_blend_steps: int = 50
     """Dual-mode only: number of control steps over which the commanded joint target is
     blended from the previous policy's last command to the incoming policy's target when
     switching (X/x). Removes the one-step target jump at the switch (most visible on the
