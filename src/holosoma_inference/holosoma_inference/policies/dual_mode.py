@@ -103,6 +103,9 @@ class DualModePolicy:
 
     def _handle_mode_switch(self):
         """Switch from active to inactive policy."""
+        # Capture the outgoing policy's last commanded target so the incoming policy can blend
+        # toward its own target instead of jumping in a single control step.
+        q_from = getattr(self.active, "_last_cmd_q", None)
         self.active._handle_stop_policy()
 
         target = self.secondary if self.active is self.primary else self.primary
@@ -127,6 +130,12 @@ class DualModePolicy:
         # Re-initialize phase and activate
         self.active._init_phase_components()
         self.active._handle_start_policy()
+
+        # Smooth the commanded-target discontinuity at the switch (esp. the low-stiffness
+        # arms): blend the new policy's target from the previous command over a short window.
+        blend_steps = getattr(self.active.config.task, "switch_blend_steps", 0)
+        if q_from is not None and blend_steps > 0:
+            self.active.begin_switch_blend(q_from, blend_steps)
 
         logger.info(
             colored(
