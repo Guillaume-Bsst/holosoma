@@ -365,6 +365,25 @@ class MujocoSceneManager:
         # Store prefix for later use by simulator
         self.robot_prefix = prefix
 
+    def add_free_box(self, pos, half_extent: float, mass: float) -> None:
+        """Spawn a free (physical) rigid box in the world -- object-carry sim-to-sim visualisation.
+
+        A body with its own freejoint + box geom. Purely physical: it falls if not held (the policy
+        does not act on it). The robot is addressed by its named freejoint, so this extra freejoint
+        does not disturb robot state addressing. Gated by SimEngineConfig.add_box in run_sim.
+        """
+        box_body = self.world_spec.worldbody.add_body(name="free_box", pos=list(pos), quat=[1, 0, 0, 0])
+        box_body.add_freejoint(name="free_box_joint")
+        box_body.add_geom(
+            name="free_box_geom",
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[half_extent, half_extent, half_extent],
+            mass=mass,
+            rgba=[0.7, 0.8, 0.9, 1.0],
+            friction=[0.9, 0.01, 0.001],
+        )
+        logger.info(f"Spawned free box at {list(pos)} (half_extent={half_extent} m, mass={mass} kg)")
+
     def _apply_collision_settings(self, robot_spec: mujoco.MjSpec, robot_config: RobotConfig) -> None:
         """Apply collision settings based on unified self_collisions configuration.
 

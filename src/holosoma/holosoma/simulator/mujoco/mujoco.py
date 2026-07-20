@@ -401,6 +401,11 @@ class MuJoCo(BaseSimulator):
             terrain_state, self.robot_config, xml_filter=self.simulator_config.robot_mjcf_filter
         )
 
+        # Optional free box for object-carry sim-to-sim visualisation (SimEngineConfig.add_box).
+        sim_cfg = self.simulator_config.sim
+        if getattr(sim_cfg, "add_box", False):
+            self.scene_manager.add_free_box(sim_cfg.box_pos, sim_cfg.box_half_extent, sim_cfg.box_mass)
+
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.
 

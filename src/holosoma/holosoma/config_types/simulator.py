@@ -139,6 +139,20 @@ class SimEngineConfig:
     max_episode_length_s: float = 20.0
     """Maximum episode length in seconds."""
 
+    add_box: bool = False
+    """run_sim only: spawn a free rigid box in the scene (for object-carry sim-to-sim visualisation).
+    Purely physical (falls if not held) -- the policy is not affected by it. Toggle off to run without."""
+
+    box_pos: tuple[float, float, float] = (0.4, 0.0, 0.2)
+    """Initial world position of the spawned box (m). Default: resting on the ground in front of the
+    robot (z just above half-extent so it settles, not floating). Move it wherever you want to see it."""
+
+    box_half_extent: float = 0.16
+    """Half-side of the spawned cube (m). Default 0.16 = the 0.32 m box32."""
+
+    box_mass: float = 0.811
+    """Mass of the spawned box (kg). Default = the real measured box."""
+
 
 @dataclass(frozen=True)
 class IsaacGymPhysicsConfig:
