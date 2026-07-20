@@ -199,6 +199,47 @@ def object_surface_contact_error_exp(
     return torch.where(ref_contact, reward, torch.ones_like(reward))
 
 
+def object_flat_contact_quality_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
+    """Contact QUALITY reward: reward the contact hand's flat-face keypoints to be flush on the box.
+
+    Independent of the reference witness (unlike object_surface_contact_error_exp, which matches the
+    -- oblique, marginal -- reference contact). On reference-contact frames, take K fixed keypoints on
+    the contact hand's flat face (grasp_settle_cfg.flat_contact_offsets, in the wrist frame), map them
+    to the box-local frame and reward ALL K being at the box surface via exp(-mean(signed_dist^2)/
+    sigma^2). K>=3 coplanar points at distance 0 == a flat patch pressed against the box face, which
+    resists the rotational escape a single contact point cannot (the 155deg tumble). Pairs with the
+    physicality curriculum: once the box is physical the policy must present this patch to hold it.
+    Neutral (1) off contact frames / without an object.
+    """
+    from holosoma.utils.box_geometry import box_nearest_and_signed_distance
+    from holosoma.utils.grasp_settle import gather_anchor
+    from holosoma.utils.rotations import quat_apply, quat_rotate_inverse
+
+    mc = _get_motion_command_and_assert_type(env)
+    if mc._anchor_body_indexes is None:
+        return torch.ones(env.num_envs, device=env.device)
+
+    anchor_idx, ref_contact = mc._lookup_ref_contact(mc.time_steps, mc.anchor_pos_w, mc.object_pos_w)
+    a_pos, a_quat = gather_anchor(mc.robot_anchor_pos_w, mc.robot_anchor_quat_w, anchor_idx)  # (N,3),(N,4)
+
+    offsets = torch.tensor(mc.grasp_settle_cfg.flat_contact_offsets, device=env.device, dtype=a_pos.dtype)  # (K,3)
+    n, k = env.num_envs, offsets.shape[0]
+    # world keypoints: a_pos + R(a_quat) @ offset, per keypoint
+    a_quat_k = a_quat.unsqueeze(1).expand(n, k, 4).reshape(n * k, 4)
+    off_k = offsets.unsqueeze(0).expand(n, k, 3).reshape(n * k, 3)
+    pts_w = a_pos.unsqueeze(1) + quat_apply(a_quat_k, off_k, w_last=True).reshape(n, k, 3)  # (N,K,3)
+
+    box_pos = mc.simulator_object_pos_w.unsqueeze(1)  # (N,1,3)
+    box_quat_k = mc.simulator_object_quat_w.unsqueeze(1).expand(n, k, 4).reshape(n * k, 4)
+    pts_local = quat_rotate_inverse(box_quat_k, (pts_w - box_pos).reshape(n * k, 3), w_last=True).reshape(n, k, 3)
+
+    half = torch.tensor(mc.grasp_settle_cfg.box_half_extents, device=env.device, dtype=pts_local.dtype)
+    signed_dist, _ = box_nearest_and_signed_distance(pts_local, half)  # (N,K)
+    err = torch.mean(torch.square(signed_dist), dim=-1)  # (N,)
+    reward = torch.exp(-err / sigma**2)
+    return torch.where(ref_contact, reward, torch.ones_like(reward))
+
+
 # ================================================================================================
 # Undesired Contacts Rewards
 # ================================================================================================

@@ -172,6 +172,22 @@ class GraspSettleConfig:
     the lagging sim hand with zero velocity -> no tumble), so the box never drifts and never kills the
     episode. Supersedes weld_contact_prob_* when enabled."""
 
+    flat_contact_offsets: list[list[float]] = field(
+        default_factory=lambda: [
+            [0.029, -0.003, 0.0],
+            [0.029, 0.032, 0.0],
+            [0.029, -0.038, 0.0],
+            [0.029, -0.003, 0.035],
+            [0.029, -0.003, -0.035],
+        ]
+    )
+    """Contact-patch keypoints on the hand's flat face, as offsets (m) in the anchor (wrist_yaw_link)
+    frame. Used by the contact-quality reward object_flat_contact_quality_exp: rewarding ALL of them to
+    be flush against the box (signed distance ~0) drives a PATCH contact -- >=3 non-collinear points
+    touching == a flat face against the box face, which resists the rotational escape a single contact
+    point cannot (the 155deg box tumble). Independent of the reference witness; teaches HOW to grip.
+    Default = the half-sphere hand's flat disk (centre + 4 at r~0.035); retune for a different hand."""
+
     anchor_body_names: list[str] = field(
         default_factory=lambda: ["left_wrist_yaw_link", "right_wrist_yaw_link"]
     )
