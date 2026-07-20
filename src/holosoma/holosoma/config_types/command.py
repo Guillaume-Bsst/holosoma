@@ -131,6 +131,35 @@ class GraspSettleConfig:
     """Env steps over which the assist probability anneals linearly from start to end.
     (~55% of a 30k-iteration PPO run at 24 steps/iteration.)"""
 
+    # --- physicality curriculum: gradually make the box physical as the policy succeeds ---------
+    physicality_curriculum: bool = False
+    """Adaptive curriculum on top of kinematic_object_during_contact. The kinematic override is
+    blended by ``alpha`` in [0,1]: box_state = alpha*reference + (1-alpha)*physical, per contact step.
+    alpha=1 = fully kinematic (box forced to reference, current behaviour); alpha=0 = fully physical
+    (box free, the robot must physically hold it); intermediate = partial assist (the box slips/droops
+    between corrections, so the policy must grip to keep it near the reference). alpha starts at 1 and
+    DECREASES by physicality_alpha_step whenever the success-rate EMA exceeds
+    physicality_success_threshold (with a cooldown for the policy to re-adapt), down to
+    physicality_alpha_min. Monotonic (alpha never rises); if success drops the curriculum just waits,
+    so it plateaus at the most-physical box the policy can hold. Requires
+    kinematic_object_during_contact=True. Teaches gripping while staying convergent."""
+
+    physicality_success_threshold: float = 0.9
+    """Success-rate EMA above which alpha is decreased (box made more physical)."""
+
+    physicality_alpha_step: float = 0.1
+    """Decrement applied to alpha (1->0) at each curriculum advance."""
+
+    physicality_alpha_min: float = 0.0
+    """Floor for alpha. 0.0 lets the curriculum reach a fully physical box."""
+
+    physicality_cooldown_steps: int = 2000
+    """Policy steps to wait after each alpha decrease before checking the threshold again (lets the
+    policy re-adapt to the new physicality before advancing further)."""
+
+    physicality_ema_beta: float = 0.02
+    """EMA smoothing for the per-step success signal (higher = more reactive, noisier)."""
+
     # --- kinematic object during contact (the reliable "make it work" grasp) ------------------
     kinematic_object_during_contact: bool = False
     """When True, the object is KINEMATIC on every reference-contact frame: its pose+velocity are set

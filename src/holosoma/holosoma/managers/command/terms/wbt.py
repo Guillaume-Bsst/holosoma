@@ -1058,17 +1058,33 @@ class MotionCommand(CommandTermBase):
             if self.grasp_settle_cfg.kinematic_object_during_contact:
                 kin_ids = torch.where(ref_contact)[0]
                 if kin_ids.numel() > 0:
+                    alpha = self._physicality_alpha
+                    ref_pos = obj_pos_ref[kin_ids]
+                    ref_quat = obj_quat_ref[kin_ids]
+                    ref_lin_vel = self.object_lin_vel_w[kin_ids]
                     zeros_ang = torch.zeros(kin_ids.numel(), 3, device=self.device)
-                    kin_state = torch.cat(
-                        [
-                            obj_pos_ref[kin_ids],
-                            obj_quat_ref[kin_ids],
-                            self.object_lin_vel_w[kin_ids],
-                            zeros_ang,
-                        ],
-                        dim=-1,
-                    )
-                    self._env.simulator.set_actor_states([self.object_name], kin_ids, kin_state)
+                    if alpha >= 0.999:
+                        # fully kinematic (fast path): box forced onto the reference
+                        kin_state = torch.cat([ref_pos, ref_quat, ref_lin_vel, zeros_ang], dim=-1)
+                        self._env.simulator.set_actor_states([self.object_name], kin_ids, kin_state)
+                    elif alpha > 1e-4:
+                        # PHYSICALITY CURRICULUM partial assist: blend the reference with the box's
+                        # current PHYSICAL state. box = alpha*ref + (1-alpha)*physical. The box slips/
+                        # droops between corrections (physics acts in the substeps), so the policy must
+                        # grip to keep it near the reference. As alpha->0 the box becomes fully physical.
+                        cur = self._env.simulator.all_root_states[self.object_indices_in_simulator][kin_ids]
+                        t = torch.tensor(alpha, device=self.device)
+                        blend = torch.cat(
+                            [
+                                alpha * ref_pos + (1.0 - alpha) * cur[:, :3],
+                                slerp(cur[:, 3:7], ref_quat, t),
+                                alpha * ref_lin_vel + (1.0 - alpha) * cur[:, 7:10],
+                                (1.0 - alpha) * cur[:, 10:13],
+                            ],
+                            dim=-1,
+                        )
+                        self._env.simulator.set_actor_states([self.object_name], kin_ids, blend)
+                    # alpha <= 1e-4: fully physical -> no override, the box is free
 
             weld_mask = self.weld_assist & ref_contact
             if self.grasp_settle_cfg.weld_object_during_settle:
@@ -1353,6 +1369,36 @@ class MotionCommand(CommandTermBase):
         anchor_idx, anchor_dist = select_grasp_anchor(anchor_pos, obj_pos)
         return anchor_idx, anchor_dist < self.grasp_settle_cfg.contact_distance_threshold
 
+    def update_physicality_curriculum(self, success_rate: float) -> None:
+        """Advance the box-physicality curriculum from the env's aggregate success rate.
+
+        EMA-smooths the per-step success signal; when the EMA clears the threshold AND the cooldown
+        has elapsed, lower the box blend factor ``_physicality_alpha`` by one step (box gets more
+        physical). Monotonic and cooldown-gated so the policy re-adapts between advances; after each
+        advance the EMA is reset so the policy must re-earn the threshold at the new physicality.
+        No-op unless both physicality_curriculum and kinematic_object_during_contact are enabled.
+        """
+        cfg = self.grasp_settle_cfg
+        if not (cfg.physicality_curriculum and cfg.kinematic_object_during_contact):
+            return
+        beta = cfg.physicality_ema_beta
+        self._success_ema = (1.0 - beta) * self._success_ema + beta * float(success_rate)
+        self._steps_since_alpha_change += 1
+        if (
+            self._physicality_alpha > cfg.physicality_alpha_min
+            and self._success_ema >= cfg.physicality_success_threshold
+            and self._steps_since_alpha_change >= cfg.physicality_cooldown_steps
+        ):
+            self._physicality_alpha = max(
+                cfg.physicality_alpha_min, self._physicality_alpha - cfg.physicality_alpha_step
+            )
+            self._steps_since_alpha_change = 0
+            self._success_ema = 0.0  # re-earn the threshold at the new physicality before advancing
+            logger.info(
+                f"[physicality curriculum] success EMA cleared {cfg.physicality_success_threshold:.2f} "
+                f"-> box alpha -> {self._physicality_alpha:.2f} (1=kinematic, 0=fully physical)"
+            )
+
     #########################################################################################
     ## Methods that does not fit into setup/step/reset pattern
     #########################################################################################
@@ -1373,6 +1419,11 @@ class MotionCommand(CommandTermBase):
         self.weld_assist = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.weld_assist_prob = 0.0
         self._env_step_counter = 0
+
+        # physicality curriculum: box blend factor (1=kinematic, 0=physical), success EMA, cooldown.
+        self._physicality_alpha = 1.0
+        self._success_ema = 0.0
+        self._steps_since_alpha_change = 0
 
         # debug hooks used by the offline probe harness (probe_grasp_settle.py):
         #   _force_start_timesteps: if set (long tensor, per env, absolute frame index), reset()
@@ -1437,6 +1488,9 @@ class MotionCommand(CommandTermBase):
             self.metrics["motion/object_ref_contact"] = ref_contact.float()
             self.metrics["motion/object_held"] = ((hand_dist < thr) & ref_contact).float()
             self.metrics["motion/weld_assist_prob"] = torch.full_like(hand_dist, float(self.weld_assist_prob))
+            # box physicality curriculum: alpha (1=kinematic, 0=physical) + the success EMA driving it
+            self.metrics["motion/physicality_alpha"] = torch.full_like(hand_dist, float(self._physicality_alpha))
+            self.metrics["motion/physicality_success_ema"] = torch.full_like(hand_dist, float(self._success_ema))
 
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler.get_stats()

@@ -85,7 +85,10 @@ class WholeBodyTrackingManager(BaseTask):
             # timeout and clip-end both count as success; bad_tracking is the only failure mode
             motion_ended = motion_command.time_steps >= motion_command.motion.time_step_total - 2
             success = resetting & (self.time_out_buf | motion_ended)
-            self.log_dict["motion/success_rate"] = success.float().sum() / resetting.float().sum()
+            success_rate = success.float().sum() / resetting.float().sum()
+            self.log_dict["motion/success_rate"] = success_rate
+            # drive the box-physicality curriculum (no-op unless it is enabled)
+            motion_command.update_physicality_curriculum(float(success_rate))
 
     def reset_all(self):
         # If reset_all is called several times, clear buffer in motion_command
