@@ -65,6 +65,16 @@ g1_29dof_wbt = InferenceConfig(
     secondary=_g1_safety_secondary,
 )
 
+# Object-carry policy (trained with exp:g1-29dof-wbt-w-object-actor): 163-dim actor obs = wbt 154 +
+# box pose (obj_pos_b 3 + obj_ori_b 6). Pass --task.object-motion-file <clip>.npz so the box pose can
+# be derived from the reference clip (see WholeBodyTrackingPolicy._load_object_motion).
+g1_29dof_wbt_w_object = InferenceConfig(
+    robot=_g1_29dof_wbt_robot,
+    observation=observation.wbt_w_object,
+    task=task.wbt,
+    secondary=_g1_safety_secondary,
+)
+
 # fmt: off
 g1_27dof_wbt = InferenceConfig(
     robot=replace(
@@ -101,6 +111,7 @@ DEFAULTS = {
     "g1-29dof-loco": g1_29dof_loco,
     "t1-29dof-loco": t1_29dof_loco,
     "g1-29dof-wbt": g1_29dof_wbt,
+    "g1-29dof-wbt-w-object": g1_29dof_wbt_w_object,
     "g1-27dof-wbt": g1_27dof_wbt,
 }
 

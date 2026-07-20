@@ -180,6 +180,54 @@ wbt_g1_27dof = ObservationConfig(
     },
 )
 
+# Object-carry variant: same actor_obs as `wbt` plus the box pose relative to the reference root
+# (obj_pos_b 3 + obj_ori_b 6 = 9). Terms are assembled in ALPHABETICAL order (see base.py
+# obs_terms_sorted), matching the training export, so obj_ori_b/obj_pos_b land at the end after the
+# motion_* terms -> total 154 + 9 = 163. Used by the g1-29dof-wbt-w-object inference config.
+wbt_w_object = ObservationConfig(
+    obs_dict={
+        "actor_obs": [
+            "motion_command",
+            "motion_ref_ori_b",
+            "base_ang_vel",
+            "dof_pos",
+            "dof_vel",
+            "actions",
+            "obj_pos_b",
+            "obj_ori_b",
+        ]
+    },
+    obs_dims={
+        "motion_command": 58,
+        "motion_ref_pos_b": 3,
+        "motion_ref_ori_b": 6,
+        "base_lin_vel": 3,
+        "base_ang_vel": 3,
+        "dof_pos": 29,
+        "dof_vel": 29,
+        "actions": 29,
+        "obj_pos_b": 3,
+        "obj_ori_b": 6,
+    },
+    obs_scales={
+        "actions": 1.0,
+        "motion_command": 1.0,
+        "motion_ref_pos_b": 1.0,
+        "motion_ref_ori_b": 1.0,
+        "base_lin_vel": 1.0,
+        "base_ang_vel": 1.0,
+        "dof_pos": 1.0,
+        "dof_vel": 1.0,
+        "robot_body_pos_b": 1.0,
+        "robot_body_ori_b": 1.0,
+        "obj_pos_b": 1.0,
+        "obj_ori_b": 1.0,
+    },
+    history_length_dict={
+        "actor_obs": 1,
+    },
+)
+
 # =============================================================================
 # Default Configurations Dictionary
 # =============================================================================
@@ -189,6 +237,7 @@ DEFAULTS = {
     "loco-t1-29dof": loco_t1_29dof,
     "wbt": wbt,
     "wbt-g1-27dof": wbt_g1_27dof,
+    "wbt-w-object": wbt_w_object,
 }
 """Dictionary of all available observation configurations.
 

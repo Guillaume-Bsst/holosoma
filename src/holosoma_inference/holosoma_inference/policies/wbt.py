@@ -16,6 +16,7 @@ from holosoma_inference.utils.clock import ClockSub
 from holosoma_inference.utils.math.quat import (
     matrix_from_quat,
     quat_mul,
+    quat_rotate_inverse,
     quat_to_rpy,
     rpy_to_quat,
     subtract_frame_transforms,
@@ -56,6 +57,33 @@ class WholeBodyTrackingPolicy(BasePolicy):
 
         super().__init__(config)
         self._configure_action_scales()
+
+        # Object-carry policies need obj_pos_b/obj_ori_b in the actor obs. The box tracks the
+        # reference during contact (kinematic in training), so that box-pose-in-reference-root-frame
+        # transform is derived from the clip itself and indexed by the motion timestep.
+        self._obj_pos_b_traj = None
+        self._obj_ori_b_traj = None
+        if getattr(config.task, "object_motion_file", None):
+            self._load_object_motion(config.task.object_motion_file, config.task.motion_prepend_timesteps)
+
+        # Guard both ways so the two obs shapes never get crossed:
+        #  - object config (obj_pos_b in actor_obs) but no clip -> the obs assembly would KeyError on
+        #    the missing term; fail early with an actionable message instead.
+        #  - a clip was passed but the config has no object terms -> the extra obs would be silently
+        #    dropped; warn so the mismatch is visible.
+        actor_terms = self.obs_dict.get("actor_obs", [])
+        wants_object = "obj_pos_b" in actor_terms
+        if wants_object and self._obj_pos_b_traj is None:
+            raise ValueError(
+                "Inference config expects object observations (obj_pos_b/obj_ori_b) but no "
+                "--task.object-motion-file was given. Pass the training clip NPZ, or use "
+                "inference:g1-29dof-wbt (non-object / full-loco) instead."
+            )
+        if self._obj_pos_b_traj is not None and not wants_object:
+            logger.warning(
+                "object_motion_file was provided but this obs config has no obj_pos_b/obj_ori_b terms "
+                "(non-object policy); the object motion will be ignored."
+            )
 
         # Load stiff startup parameters from robot config
         if config.robot.stiff_startup_pos is not None:
@@ -100,6 +128,39 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 _show_warning()
         else:
             _show_warning()
+
+    def _load_object_motion(self, npz_path: str, prepend: int) -> None:
+        """Precompute obj_pos_b (3) + obj_ori_b (6D) per motion frame from the training clip.
+
+        obj_pos_b/obj_ori_b are the box pose expressed in the reference-root frame. Both the box and
+        the root come from the same clip, so the transform is clip-internal (independent of where the
+        robot actually is in the world) and matches exactly what the policy saw in training whenever
+        the box tracked the reference (contact frames -- kinematic -- and rest). We hold frame 0 for
+        the `prepend` default-pose frames so the index lines up with the ONNX motion timestep.
+        """
+        data = np.load(npz_path)
+        obj_pos = np.asarray(data["object_pos_w"], np.float32)  # (T, 3) world
+        obj_quat = np.asarray(data["object_quat_w"], np.float32)  # (T, 4) wxyz
+        root = np.asarray(data["joint_pos"], np.float32)[:, :7]  # (T, 7) [pos(3), quat wxyz(4)]
+        root_pos, root_quat = root[:, :3], root[:, 3:7]
+
+        # box pose in the reference-root frame (inference math utils, all wxyz -- same geometry as the
+        # training obj_pos_b/obj_ori_b, which used the xyzw sim convention).
+        rel_pos = quat_rotate_inverse(root_quat, obj_pos - root_pos)  # (T, 3)
+        rel_quat = subtract_frame_transforms(root_quat, obj_quat)  # (T, 4) wxyz
+        rel_mat = matrix_from_quat(rel_quat)  # (T, 3, 3)
+        ori6 = rel_mat[..., :2].reshape(rel_mat.shape[0], -1)  # (T, 6) first two columns
+
+        if prepend > 0:
+            rel_pos = np.concatenate([np.repeat(rel_pos[:1], prepend, axis=0), rel_pos], axis=0)
+            ori6 = np.concatenate([np.repeat(ori6[:1], prepend, axis=0), ori6], axis=0)
+
+        self._obj_pos_b_traj = rel_pos.astype(np.float32)
+        self._obj_ori_b_traj = ori6.astype(np.float32)
+        logger.info(
+            f"Loaded object motion from {npz_path}: {self._obj_pos_b_traj.shape[0]} frames "
+            f"(prepend={prepend}) -> obj_pos_b(3)+obj_ori_b(6) available in actor obs."
+        )
 
     def _get_ref_body_orientation_in_world(self, robot_state_data):
         # Create configuration for pinocchio robot
@@ -252,6 +313,18 @@ class WholeBodyTrackingPolicy(BasePolicy):
 
         # actions
         current_obs_buffer_dict["actions"] = self.last_policy_action
+
+        # obj_pos_b / obj_ori_b (object-carry policies): box pose in the reference-root frame, looked
+        # up from the clip at the current motion timestep (see _load_object_motion). For real
+        # deployment substitute a live mocap/RGB-D box pose here instead of the clip lookup.
+        if self._obj_pos_b_traj is not None:
+            if getattr(self.config.task, "zero_object_obs", False):
+                current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
+                current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
+            else:
+                idx = int(np.clip(int(round(self.curr_motion_timestep)), 0, self._obj_pos_b_traj.shape[0] - 1))
+                current_obs_buffer_dict["obj_pos_b"] = self._obj_pos_b_traj[idx : idx + 1]
+                current_obs_buffer_dict["obj_ori_b"] = self._obj_ori_b_traj[idx : idx + 1]
 
         return current_obs_buffer_dict
 

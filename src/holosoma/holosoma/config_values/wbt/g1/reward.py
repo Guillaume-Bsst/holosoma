@@ -107,6 +107,23 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
             params={"sigma": 0.4},
             weight=1.0,
         ),
+        # Dense grasp signal: hand<->object relative position on contact frames (neutral on free
+        # frames). Complements the global object terms, which say nothing about WHERE in the hand
+        # frame the object should be while carried.
+        "object_grasp_relative_error_exp": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:object_grasp_relative_error_exp",
+            params={"sigma": 0.1},
+            weight=1.0,
+        ),
+        # WHERE on the box surface + how deep the current contact is, vs the retargeting reference
+        # (HoloV2's own witness/distance point-cloud contact fields, baked per-frame -- see
+        # gvhmr-fp-pipeline/contact_from_retarget.py). Neutral automatically if the loaded motion
+        # doesn't carry a reference witness (older/synthetic clips).
+        "object_surface_contact_error_exp": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:object_surface_contact_error_exp",
+            params={"sigma_geodesic": 0.1, "sigma_dist": 0.05},
+            weight=1.0,
+        ),
     }
 )
 

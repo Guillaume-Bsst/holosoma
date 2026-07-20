@@ -65,6 +65,91 @@ class NoiseToInitialPoseConfig:
 
 
 @dataclass(frozen=True)
+class GraspSettleConfig:
+    """Grasp-consistent object initialisation + settling window for object-interaction clips.
+
+    When a reset lands mid-manipulation (robot holding the object), RSI + independent per-actor
+    noise breaks the hand<->object contact, so the object is ejected (penetration) or dropped and
+    the episode dies on the object-tracking termination. This makes those contact resets stable:
+      - place the object exactly at its reference pose (drop the independent object noise),
+      - optionally scale down the robot init-pose noise on contact resets,
+      - hold the clip frozen for ``settle_steps`` while the physics contact equilibrates,
+      - suppress tracking termination during that settle window (grace period),
+      - optionally weld the object to the nearest hand during the window, then release.
+
+    All gated behind ``enable`` and only active when the motion actually has an object, so the
+    default (disabled) reproduces the previous behaviour exactly.
+    """
+
+    enable: bool = False
+    """Master switch. When False, reset/step/termination behave exactly as before."""
+
+    contact_distance_threshold: float = 0.35
+    """Nearest hand<->object distance (m) below which a reset frame counts as 'in contact'.
+    Above it (object resting on the ground, hands away) the reset is left untouched."""
+
+    box_half_extents: tuple[float, float, float] = (0.16, 0.16, 0.16)
+    """Object half-extents (m), box-local axes -- must match the grasped object's URDF/mesh
+    (box32.obj: 0.32m cube). Used by the GPU box SDF/geodesic (utils/box_geometry.py) for the
+    surface-contact reward (object_surface_contact_error_exp): the live nearest-surface-point and
+    signed distance of the current sim contact are computed against THIS box, then compared to the
+    retargeting-pipeline's reference witness/distance (see gvhmr-fp-pipeline/contact_from_retarget.py)."""
+
+    settle_steps: int = 12
+    """Number of policy steps to freeze the clip + grace termination after a contact reset."""
+
+    settle_robot_noise_scale: float = 0.0
+    """Multiplier applied to the robot init-pose noise (dof/root) on contact resets only.
+    0.0 = spawn exactly at the reference contact pose (most stable). 1.0 = keep full noise."""
+
+    freeze_clip_during_settle: bool = True
+    """Hold the motion counter fixed during the settle window (don't advance the clip)."""
+
+    disable_termination_during_settle: bool = True
+    """Suppress tracking-based termination (BadTracking) during the settle window."""
+
+    weld_object_during_settle: bool = False
+    """Kinematically weld the object to the nearest hand each policy step during the window,
+    then release. Robustness upgrade for clips where the object still pops after settling.
+    Applied per policy step (not per physics substep)."""
+
+    # --- full-contact weld curriculum ("training wheels") -------------------------------------
+    # Independently of the settle window, an episode can be "assisted": whenever the REFERENCE is
+    # in contact (nearest reference hand within contact_distance_threshold of the reference object),
+    # the object is kinematically carried at the reference grasp transform applied to the SIM hand.
+    # The assist probability is drawn per episode at reset and annealed over training so early
+    # learning sees a stable carry (no cold-start "box always falls -> no signal") while the final
+    # policy holds the object fully physically.
+    weld_contact_prob_start: float = 0.0
+    """Episode-assist probability at step 0 of training. 0.0 disables the curriculum entirely."""
+
+    weld_contact_prob_end: float = 0.0
+    """Episode-assist probability after weld_anneal_steps env steps (keep 0.0 so the final policy
+    is never assisted)."""
+
+    weld_anneal_steps: int = 400_000
+    """Env steps over which the assist probability anneals linearly from start to end.
+    (~55% of a 30k-iteration PPO run at 24 steps/iteration.)"""
+
+    # --- kinematic object during contact (the reliable "make it work" grasp) ------------------
+    kinematic_object_during_contact: bool = False
+    """When True, the object is KINEMATIC on every reference-contact frame: its pose+velocity are set
+    to the REFERENCE trajectory (clip) each policy step, always on (no anneal, no probability). This is
+    the standard manipulation-from-mocap treatment: a small-contact hand model cannot robustly hold a
+    box by friction under imperfect tracking (empirically: box drifts ~25cm mid-carry and the episode
+    dies on bad_object_pos), so instead the grasp is *assumed* (the real robot's hand grips for real at
+    deployment) and the policy learns the BODY motion + hand PLACEMENT (via object_grasp_relative_error).
+    Unlike the (buggy) assist weld this welds to the SMOOTH REFERENCE with the reference velocity (not to
+    the lagging sim hand with zero velocity -> no tumble), so the box never drifts and never kills the
+    episode. Supersedes weld_contact_prob_* when enabled."""
+
+    anchor_body_names: list[str] = field(
+        default_factory=lambda: ["left_wrist_yaw_link", "right_wrist_yaw_link"]
+    )
+    """Candidate hand/anchor bodies; the nearest to the object at the reset frame is chosen."""
+
+
+@dataclass(frozen=True)
 class MotionConfig:
     """Motion related configuration for Whole Body Tracking.
 
@@ -137,3 +222,6 @@ class MotionConfig:
 
     # noise related
     noise_to_initial_pose: NoiseToInitialPoseConfig = field(default_factory=NoiseToInitialPoseConfig)
+
+    # object-interaction: grasp-consistent init + settling window (no-op unless enabled + has_object)
+    grasp_settle: GraspSettleConfig = field(default_factory=GraspSettleConfig)

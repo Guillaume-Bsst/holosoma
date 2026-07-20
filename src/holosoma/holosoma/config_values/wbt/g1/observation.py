@@ -46,15 +46,17 @@ actor_obs_w_object = ObsGroupCfg(
     history_length=1,
     terms={
         **actor_obs_shared.terms,
+        # Object pose is available at deployment via mocap/RGB-D perception; add measurement-level
+        # noise so the policy is robust to that pipeline (~2 cm position, ~0.05 orientation).
         "obj_pos_b": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:obj_pos_b",
             scale=1.0,
-            noise=0.0,
+            noise=0.02,
         ),
         "obj_ori_b": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:obj_ori_b",
             scale=1.0,
-            noise=0.0,
+            noise=0.05,
         ),
     },
 )

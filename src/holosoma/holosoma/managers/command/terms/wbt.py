@@ -13,6 +13,13 @@ from holosoma.config_types.command import MotionConfig, NoiseToInitialPoseConfig
 from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
 from holosoma.managers.command.base import CommandTermBase
 from holosoma.utils.file_cache import cached_open
+from holosoma.utils.grasp_settle import (
+    anneal_prob,
+    apply_grasp_transform,
+    gather_anchor,
+    grasp_relative_transform,
+    select_grasp_anchor,
+)
 from holosoma.utils.path import resolve_data_file_path
 from holosoma.utils.rotations import (
     get_euler_xyz,
@@ -152,6 +159,36 @@ class MotionLoader:
                 self._object_pos_w = torch.zeros(0, 3, device=device)
                 self._object_quat_w = torch.zeros(0, 4, device=device)
                 self._object_lin_vel_w = torch.zeros(0, 3, device=device)
+
+            # Ground-truth hand<->object contact from the retargeting pipeline's own point-cloud
+            # interaction fields (witness/distance/normal + active-in-margin, real mesh-to-mesh SDF
+            # against the captured demo -- see gvhmr-fp-pipeline/contact_from_retarget.py). Optional:
+            # motions without it fall back to the runtime nearest-anchor distance threshold
+            # (MotionCommand._lookup_ref_contact).
+            self.has_gt_contact = self.has_object and "object_ref_contact" in data
+            if self.has_gt_contact:
+                self._object_ref_contact = torch.tensor(data["object_ref_contact"], dtype=torch.bool, device=device)
+                self._object_ref_contact_dist = torch.tensor(
+                    data["object_ref_contact_dist"], dtype=torch.float32, device=device
+                )
+                self._object_ref_anchor_idx = torch.tensor(
+                    data["object_ref_anchor_idx"], dtype=torch.long, device=device
+                )
+            else:
+                self._object_ref_contact = torch.zeros(0, dtype=torch.bool, device=device)
+                self._object_ref_contact_dist = torch.zeros(0, device=device)
+                self._object_ref_anchor_idx = torch.zeros(0, dtype=torch.long, device=device)
+
+            # Reference witness point (nearest box-surface point to the contact hand, BOX-LOCAL frame
+            # -- see contact_from_retarget.py) for the surface-geodesic reward. Optional on top of
+            # has_gt_contact: older GT-contact NPZs without it just don't get the geodesic term.
+            self.has_gt_witness = self.has_gt_contact and "object_ref_witness_local" in data
+            if self.has_gt_witness:
+                self._object_ref_witness_local = torch.tensor(
+                    data["object_ref_witness_local"], dtype=torch.float32, device=device
+                )
+            else:
+                self._object_ref_witness_local = torch.zeros(0, 3, device=device)
         return body_names, joint_names
 
     @property
@@ -191,6 +228,22 @@ class MotionLoader:
         return self._object_lin_vel_w[:]
 
     @property
+    def object_ref_contact(self) -> torch.Tensor:
+        return self._object_ref_contact[:]
+
+    @property
+    def object_ref_contact_dist(self) -> torch.Tensor:
+        return self._object_ref_contact_dist[:]
+
+    @property
+    def object_ref_anchor_idx(self) -> torch.Tensor:
+        return self._object_ref_anchor_idx[:]
+
+    @property
+    def object_ref_witness_local(self) -> torch.Tensor:
+        return self._object_ref_witness_local[:]
+
+    @property
     def num_motions(self) -> int:
         return 1
 
@@ -225,6 +278,39 @@ class MotionLoader:
             existing = getattr(self, attr_name)
             tensors = (segments[seg_key], existing) if prepend else (existing, segments[seg_key])
             setattr(self, attr_name, torch.cat(tensors, dim=0))
+
+        if self.has_gt_contact:
+            # The prepended/appended transition (default pose <-> clip) has no real demo contact --
+            # pad with "no contact" (False / large distance / anchor 0), same convention `active`
+            # uses outside its margin (see targets/interaction/fields.py in HoloV2).
+            n_seg = segments["joint_pos"].shape[0]
+            pad_contact = torch.zeros(n_seg, dtype=torch.bool, device=self._object_ref_contact.device)
+            pad_dist = torch.full((n_seg,), 999.0, device=self._object_ref_contact_dist.device)
+            pad_anchor = torch.zeros(n_seg, dtype=torch.long, device=self._object_ref_anchor_idx.device)
+            self._object_ref_contact = torch.cat(
+                (pad_contact, self._object_ref_contact) if prepend else (self._object_ref_contact, pad_contact),
+                dim=0,
+            )
+            self._object_ref_contact_dist = torch.cat(
+                (pad_dist, self._object_ref_contact_dist)
+                if prepend
+                else (self._object_ref_contact_dist, pad_dist),
+                dim=0,
+            )
+            self._object_ref_anchor_idx = torch.cat(
+                (pad_anchor, self._object_ref_anchor_idx)
+                if prepend
+                else (self._object_ref_anchor_idx, pad_anchor),
+                dim=0,
+            )
+            if self.has_gt_witness:
+                pad_witness = torch.zeros(n_seg, 3, device=self._object_ref_witness_local.device)
+                self._object_ref_witness_local = torch.cat(
+                    (pad_witness, self._object_ref_witness_local)
+                    if prepend
+                    else (self._object_ref_witness_local, pad_witness),
+                    dim=0,
+                )
 
         self.time_step_total = self._joint_pos.shape[0]
         return self
@@ -302,6 +388,23 @@ class MultiMotionLoader:
             self._object_quat_w = torch.zeros(0, 4, device=device)
             self._object_lin_vel_w = torch.zeros(0, 3, device=device)
 
+        # Ground-truth contact (see MotionLoader): only usable if ALL clips carry it.
+        self.has_gt_contact = self.has_object and all(ld.has_gt_contact for ld in loaders)
+        if self.has_gt_contact:
+            self._object_ref_contact = torch.cat([ld._object_ref_contact for ld in loaders], dim=0)
+            self._object_ref_contact_dist = torch.cat([ld._object_ref_contact_dist for ld in loaders], dim=0)
+            self._object_ref_anchor_idx = torch.cat([ld._object_ref_anchor_idx for ld in loaders], dim=0)
+        else:
+            self._object_ref_contact = torch.zeros(0, dtype=torch.bool, device=device)
+            self._object_ref_contact_dist = torch.zeros(0, device=device)
+            self._object_ref_anchor_idx = torch.zeros(0, dtype=torch.long, device=device)
+
+        self.has_gt_witness = self.has_gt_contact and all(ld.has_gt_witness for ld in loaders)
+        if self.has_gt_witness:
+            self._object_ref_witness_local = torch.cat([ld._object_ref_witness_local for ld in loaders], dim=0)
+        else:
+            self._object_ref_witness_local = torch.zeros(0, 3, device=device)
+
         logger.info(f"MultiMotionLoader: {self._num_motions} motions, {self.time_step_total} total frames")
 
     @property
@@ -352,6 +455,22 @@ class MultiMotionLoader:
     def object_lin_vel_w(self) -> torch.Tensor:
         return self._object_lin_vel_w[:]
 
+    @property
+    def object_ref_contact(self) -> torch.Tensor:
+        return self._object_ref_contact[:]
+
+    @property
+    def object_ref_contact_dist(self) -> torch.Tensor:
+        return self._object_ref_contact_dist[:]
+
+    @property
+    def object_ref_anchor_idx(self) -> torch.Tensor:
+        return self._object_ref_anchor_idx[:]
+
+    @property
+    def object_ref_witness_local(self) -> torch.Tensor:
+        return self._object_ref_witness_local[:]
+
     def extend_with_segments(self, segments: dict[str, torch.Tensor], prepend: bool) -> MultiMotionLoader:
         """Merge interpolated segments with motion data, mutating this MultiMotionLoader."""
         concat_targets = [
@@ -378,6 +497,36 @@ class MultiMotionLoader:
             setattr(self, attr_name, torch.cat(tensors, dim=0))
             if added_frames == 0:
                 added_frames = segments[seg_key].shape[0]
+
+        if self.has_gt_contact:
+            # See MotionLoader.extend_with_segments: the transition has no real demo contact.
+            pad_contact = torch.zeros(added_frames, dtype=torch.bool, device=self._object_ref_contact.device)
+            pad_dist = torch.full((added_frames,), 999.0, device=self._object_ref_contact_dist.device)
+            pad_anchor = torch.zeros(added_frames, dtype=torch.long, device=self._object_ref_anchor_idx.device)
+            self._object_ref_contact = torch.cat(
+                (pad_contact, self._object_ref_contact) if prepend else (self._object_ref_contact, pad_contact),
+                dim=0,
+            )
+            self._object_ref_contact_dist = torch.cat(
+                (pad_dist, self._object_ref_contact_dist)
+                if prepend
+                else (self._object_ref_contact_dist, pad_dist),
+                dim=0,
+            )
+            self._object_ref_anchor_idx = torch.cat(
+                (pad_anchor, self._object_ref_anchor_idx)
+                if prepend
+                else (self._object_ref_anchor_idx, pad_anchor),
+                dim=0,
+            )
+            if self.has_gt_witness:
+                pad_witness = torch.zeros(added_frames, 3, device=self._object_ref_witness_local.device)
+                self._object_ref_witness_local = torch.cat(
+                    (pad_witness, self._object_ref_witness_local)
+                    if prepend
+                    else (self._object_ref_witness_local, pad_witness),
+                    dim=0,
+                )
 
         # Update boundaries — shift all motion boundaries if prepending
         if prepend:
@@ -576,6 +725,32 @@ class MotionCommand(CommandTermBase):
                 "Object is only supported in IsaacSim"
             )
 
+        # 3b. grasp-settle: resolve the candidate hand/anchor bodies (robot body order).
+        # Resolved whenever the motion has an object (independent of the `enable` flag) so the
+        # probe harness can toggle settling on at runtime via _settle_enabled_override.
+        self.grasp_settle_cfg = self.motion_cfg.grasp_settle
+        self._anchor_body_indexes: torch.Tensor | None = None
+        if self.motion.has_object:
+            anchor_idxs = []
+            for name in self.grasp_settle_cfg.anchor_body_names:
+                resolved = FAKE_BODY_NAME_ALIASES.get(name, name)
+                if resolved in robot_body_names:
+                    anchor_idxs.append(robot_body_names.index(resolved))
+                else:
+                    logger.warning(f"[grasp_settle] anchor body '{name}' not in robot bodies; skipping")
+            assert len(anchor_idxs) > 0, (
+                "grasp_settle is enabled but none of anchor_body_names were found in the robot bodies: "
+                f"{self.grasp_settle_cfg.anchor_body_names}"
+            )
+            self._anchor_body_indexes = torch.tensor(anchor_idxs, dtype=torch.long, device=self.device)
+            if self.grasp_settle_cfg.enable:
+                logger.info(
+                    f"[grasp_settle] enabled: anchors={self.grasp_settle_cfg.anchor_body_names}, "
+                    f"settle_steps={self.grasp_settle_cfg.settle_steps}, "
+                    f"contact_thr={self.grasp_settle_cfg.contact_distance_threshold}m, "
+                    f"weld={self.grasp_settle_cfg.weld_object_during_settle}"
+                )
+
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
@@ -632,10 +807,65 @@ class MotionCommand(CommandTermBase):
             subset = torch.where(rand_vals < prob, start_idx, subset)
             self.time_steps[env_ids] = subset
 
+        # Debug hook (probe harness): force a specific absolute start frame per env instead of
+        # sampling a phase, so a mid-clip contact frame can be reproduced deterministically.
+        if self._force_start_timesteps is not None:
+            forced = self._force_start_timesteps.to(device=self.device, dtype=torch.long)
+            end_clamp = self.motion.motion_end_idx[self.motion_ids[env_ids]] - 2
+            self.time_steps[env_ids] = torch.minimum(forced[env_ids].clamp(min=0), end_clamp)
+
         # If the motion is at the last timestep, set it to the second last timestep;
         # Otherwise, update_tasks_callback will advance the timestep to the next timestep -> out of bounds error.
         already_last_timestep_mask = self.time_steps[env_ids] >= end_idx - 1
         self.time_steps[env_ids] = torch.where(already_last_timestep_mask, end_idx - 2, self.time_steps[env_ids])
+
+        # --- grasp-settle: detect contact resets & prepare per-env init scaling -------------------
+        # A reset frame is "in contact" if the nearest tracked hand is within contact_distance_threshold
+        # of the object. For those envs we (a) spawn the object at its reference pose with no independent
+        # noise, (b) optionally scale down the robot init noise, and (c) arm a settle window (see step()).
+        settle_on = self._settle_enabled()
+        contact_mask = torch.zeros(n, dtype=torch.bool, device=self.device)
+        robot_noise_scale: torch.Tensor | float = 1.0
+        if settle_on:
+            anchor_pos = self.anchor_pos_w[env_ids]  # (n, A, 3) reference hand positions
+            anchor_quat = self.anchor_quat_w[env_ids]  # (n, A, 4)
+            obj_pos_ref = self.object_pos_w[env_ids]  # (n, 3)
+            obj_quat_ref = self.object_quat_w[env_ids]  # (n, 4)
+
+            anchor_idx, contact_mask = self._lookup_ref_contact(self.time_steps[env_ids], anchor_pos, obj_pos_ref)
+
+            # grasp transform from the chosen (reference, un-noised) hand -> stored for the weld in step()
+            a_pos, a_quat = gather_anchor(anchor_pos, anchor_quat, anchor_idx)
+            rel_pos, rel_quat = grasp_relative_transform(a_pos, a_quat, obj_pos_ref, obj_quat_ref)
+            self.settle_anchor_idx[env_ids] = anchor_idx
+            self.settle_grasp_rel_pos[env_ids] = rel_pos
+            self.settle_grasp_rel_quat[env_ids] = rel_quat
+            self.settle_counter[env_ids] = torch.where(
+                contact_mask,
+                torch.full_like(anchor_idx, self.grasp_settle_cfg.settle_steps),
+                torch.zeros_like(anchor_idx),
+            )
+            # reduce robot init noise on contact resets (default 0.0 -> spawn exactly at the reference)
+            robot_noise_scale = torch.where(
+                contact_mask.unsqueeze(-1),
+                torch.full((n, 1), float(self.grasp_settle_cfg.settle_robot_noise_scale), device=self.device),
+                torch.ones(n, 1, device=self.device),
+            )  # (n, 1), broadcasts over dof/root noise
+
+            # full-contact weld curriculum: draw the per-episode assist flag with the annealed prob.
+            # Assisted episodes carry the object kinematically at the reference grasp during ALL
+            # reference-contact frames (see step()), so early training never sees an unholdable box.
+            self.weld_assist_prob = anneal_prob(
+                self._env_step_counter,
+                self.grasp_settle_cfg.weld_contact_prob_start,
+                self.grasp_settle_cfg.weld_contact_prob_end,
+                self.grasp_settle_cfg.weld_anneal_steps,
+            )
+            self.weld_assist[env_ids] = torch.rand(n, device=self.device) < self.weld_assist_prob
+        else:
+            # keep stale settle state from lingering on these envs when settling is off
+            self.settle_counter[env_ids] = 0
+            self.weld_assist[env_ids] = False
 
         # 1. Get the root/body poses from the motion data
         root_pos = self.root_pos_w[env_ids].clone()
@@ -679,9 +909,11 @@ class MotionCommand(CommandTermBase):
         )  # (3,)
 
         # 2.2 Adding noise to dof_pos, root_pos, root_vel, root_ang_vel, root_rot
+        # robot_noise_scale is (n, 1) and 1.0 for normal resets; on grasp-settle contact resets it is
+        # settle_robot_noise_scale (default 0.0) so the robot spawns exactly at the reference contact pose.
         # 1.2.1 dof_pos
         target_dof_pos = (
-            dof_pos + (torch.rand(dof_pos.shape, device=self.device) - 0.5) * 2 * dof_pos_noise
+            dof_pos + (torch.rand(dof_pos.shape, device=self.device) - 0.5) * 2 * dof_pos_noise * robot_noise_scale
         )  # (num_envs, num_dofs)
         soft_joint_pos_limits = self._env.simulator.dof_pos_limits  # type: ignore[attr-defined]  # (num_dofs, 2)
         target_dof_pos = torch.clip(target_dof_pos, soft_joint_pos_limits[:, 0], soft_joint_pos_limits[:, 1])
@@ -692,10 +924,12 @@ class MotionCommand(CommandTermBase):
         # 1.2.3 root_pos
         target_root_pos = root_pos + (
             torch.rand(root_pos.shape, device=self.device) - 0.5
-        ) * 2 * root_pos_noise.unsqueeze(0)  # (num_envs, 3)
+        ) * 2 * root_pos_noise.unsqueeze(0) * robot_noise_scale  # (num_envs, 3)
 
         # 1.2.4 root_rot
-        rand_sample_rpy = (torch.rand((len(env_ids), 3), device=self.device) - 0.5) * 2 * root_rot_noise_rpy
+        rand_sample_rpy = (
+            (torch.rand((len(env_ids), 3), device=self.device) - 0.5) * 2 * root_rot_noise_rpy * robot_noise_scale
+        )
         orientations_delta = quat_from_euler_xyz(
             rand_sample_rpy[:, 0], rand_sample_rpy[:, 1], rand_sample_rpy[:, 2]
         )  # (num_envs, 4), xyzw
@@ -704,12 +938,12 @@ class MotionCommand(CommandTermBase):
         # 1.2.5 root_lin_vel
         target_root_lin_vel = root_lin_vel + (
             torch.rand(root_lin_vel.shape, device=self.device) - 0.5
-        ) * 2 * root_vel_noise.unsqueeze(0)  # (num_envs, 3)
+        ) * 2 * root_vel_noise.unsqueeze(0) * robot_noise_scale  # (num_envs, 3)
 
         # 1.2.6 root_ang_vel
         target_root_ang_vel = root_ang_vel + (
             torch.rand(root_ang_vel.shape, device=self.device) - 0.5
-        ) * 2 * root_ang_vel_noise_rpy.unsqueeze(0)  # (num_envs, 3)
+        ) * 2 * root_ang_vel_noise_rpy.unsqueeze(0) * robot_noise_scale  # (num_envs, 3)
 
         # 3. Set the robot states in simulator
         self._env.simulator.dof_pos[env_ids] = target_dof_pos
@@ -732,7 +966,15 @@ class MotionCommand(CommandTermBase):
                 device=self.device,
             )
             obj_pos_noise = obj_pos_noise * self.init_pose_cfg.overall_noise_scale  # (3,)
-            target_obj_pos = obj_pos + (torch.rand(obj_pos.shape, device=self.device) - 0.5) * 2 * obj_pos_noise
+            obj_noise = (torch.rand(obj_pos.shape, device=self.device) - 0.5) * 2 * obj_pos_noise
+            if settle_on:
+                # Contact resets: no independent object noise and start at rest, so the object stays
+                # exactly in the reference grasp (contact-consistent placement). Free-frame resets
+                # (object on the ground, hands away) keep the original noisy behaviour.
+                keep = (~contact_mask).float().unsqueeze(-1)  # 1.0 free frame, 0.0 contact frame
+                obj_noise = obj_noise * keep
+                obj_lin_vel = obj_lin_vel * keep
+            target_obj_pos = obj_pos + obj_noise
 
             object_states = torch.cat(
                 [target_obj_pos, obj_ori, obj_lin_vel, torch.zeros_like(obj_lin_vel)], dim=-1
@@ -744,6 +986,12 @@ class MotionCommand(CommandTermBase):
         """called in _update_tasks_callback of the environment. (after compute_reward, before compute_observations)"""
         # 0. update time steps, all motion joint/body poses are updated automatically with the time steps.
         advance_mask = torch.ones_like(self.time_steps, dtype=torch.bool)
+
+        # grasp-settle: hold the clip frozen on envs whose settle window is still open, so contact
+        # equilibrates before the tracked motion resumes.
+        settle_on = self._settle_enabled()
+        if settle_on and self.grasp_settle_cfg.freeze_clip_during_settle:
+            advance_mask = advance_mask & (self.settle_counter == 0)
 
         # Handle freeze_at_timestep_zero_prob: for envs at their motion's start, randomly decide whether to advance
         freeze_prob = self.motion_cfg.freeze_at_timestep_zero_prob
@@ -782,6 +1030,69 @@ class MotionCommand(CommandTermBase):
             sim.set_actor_root_state_tensor_robots(ended_env_ids, sim.robot_root_states)
             sim.set_dof_state_tensor_robots(ended_env_ids, sim.dof_state)  # type: ignore[attr-defined]
             sim.refresh_sim_tensors()
+
+        # grasp-settle welds, one unified path (per policy step):
+        #  - settle-window weld (weld_object_during_settle): hold the object through the reset
+        #    transient. The clip is frozen during the window, so the current-reference grasp equals
+        #    the reset-time grasp.
+        #  - full-contact assist weld (curriculum): on assisted episodes, kinematically carry the
+        #    object at the CURRENT reference grasp during all reference-contact frames, so early
+        #    training never sees an unholdable box. The assist probability anneals to 0 -> the
+        #    final policy holds the object fully physically.
+        # Both compute: object_sim = T(hand_sim) o T(hand_ref)^-1 o T(object_ref) at the current frame.
+        # NOTE: must run AFTER the end-of-clip reset above — time_steps can transiently equal
+        # motion_end (out of bounds for the motion arrays) until that reset resamples them.
+        if settle_on:
+            self._env_step_counter += 1
+
+            anchor_pos_ref = self.anchor_pos_w  # (N, A, 3) reference hand poses at current frame
+            anchor_quat_ref = self.anchor_quat_w
+            obj_pos_ref = self.object_pos_w
+            obj_quat_ref = self.object_quat_w
+            anchor_idx_now, ref_contact = self._lookup_ref_contact(self.time_steps, anchor_pos_ref, obj_pos_ref)
+
+            # Kinematic object during contact: box follows the SMOOTH REFERENCE trajectory (pos+quat+
+            # vel from the clip) on every ref-contact frame, always on. The grasp is assumed (real hand
+            # grips at deployment); the policy learns body motion + hand placement. Bulletproof: no
+            # drift, no tumble, box never triggers bad_object_pos. Supersedes the assist weld.
+            if self.grasp_settle_cfg.kinematic_object_during_contact:
+                kin_ids = torch.where(ref_contact)[0]
+                if kin_ids.numel() > 0:
+                    zeros_ang = torch.zeros(kin_ids.numel(), 3, device=self.device)
+                    kin_state = torch.cat(
+                        [
+                            obj_pos_ref[kin_ids],
+                            obj_quat_ref[kin_ids],
+                            self.object_lin_vel_w[kin_ids],
+                            zeros_ang,
+                        ],
+                        dim=-1,
+                    )
+                    self._env.simulator.set_actor_states([self.object_name], kin_ids, kin_state)
+
+            weld_mask = self.weld_assist & ref_contact
+            if self.grasp_settle_cfg.weld_object_during_settle:
+                weld_mask = weld_mask | (self.settle_counter > 0)
+            weld_ids = torch.where(weld_mask)[0]
+            if weld_ids.numel() > 0:
+                a_pos_ref, a_quat_ref = gather_anchor(
+                    anchor_pos_ref[weld_ids], anchor_quat_ref[weld_ids], anchor_idx_now[weld_ids]
+                )
+                rel_pos, rel_quat = grasp_relative_transform(
+                    a_pos_ref, a_quat_ref, obj_pos_ref[weld_ids], obj_quat_ref[weld_ids]
+                )
+                a_pos_sim, a_quat_sim = gather_anchor(
+                    self.robot_anchor_pos_w[weld_ids],
+                    self.robot_anchor_quat_w[weld_ids],
+                    anchor_idx_now[weld_ids],
+                )
+                op, oq = apply_grasp_transform(a_pos_sim, a_quat_sim, rel_pos, rel_quat)
+                zeros6 = torch.zeros(weld_ids.numel(), 6, device=self.device)
+                self._env.simulator.set_actor_states(
+                    [self.object_name], weld_ids, torch.cat([op, oq, zeros6], dim=-1)
+                )
+            # advance the settle window: once the counter hits 0 the clip resumes and the weld releases
+            self.settle_counter = torch.clamp(self.settle_counter - 1, min=0)
 
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
@@ -993,12 +1304,83 @@ class MotionCommand(CommandTermBase):
         return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 7:10]
 
     #########################################################################################
+    ## Grasp-settle: anchor (hand) poses from motion data & from simulator
+    #########################################################################################
+    @property
+    def anchor_pos_w(self) -> torch.Tensor:
+        """Reference (motion) world positions of the candidate anchor bodies. (num_envs, A, 3)."""
+        return (
+            self.motion.body_pos_w[self.time_steps][:, self._anchor_body_indexes]
+            + self._env.simulator.scene.env_origins[:, None, :]
+        )
+
+    @property
+    def anchor_quat_w(self) -> torch.Tensor:
+        """Reference (motion) world orientations of the candidate anchor bodies (xyzw). (num_envs, A, 4)."""
+        return self.motion.body_quat_w[self.time_steps][:, self._anchor_body_indexes]
+
+    @property
+    def robot_anchor_pos_w(self) -> torch.Tensor:
+        """Live simulator world positions of the candidate anchor bodies. (num_envs, A, 3)."""
+        return self._env.simulator._rigid_body_pos[:, self._anchor_body_indexes, :]
+
+    @property
+    def robot_anchor_quat_w(self) -> torch.Tensor:
+        """Live simulator world orientations of the candidate anchor bodies (xyzw). (num_envs, A, 4)."""
+        return self._env.simulator._rigid_body_rot[:, self._anchor_body_indexes, :]
+
+    def _settle_enabled(self) -> bool:
+        """Whether grasp-settle is active this run (config, overridable at runtime by the probe)."""
+        if self._settle_enabled_override is not None:
+            base = self._settle_enabled_override
+        else:
+            base = self.grasp_settle_cfg.enable
+        return bool(base) and self.motion.has_object and self._anchor_body_indexes is not None
+
+    def _lookup_ref_contact(
+        self, time_idx: torch.Tensor, anchor_pos: torch.Tensor, obj_pos: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """(anchor_idx, ref_contact) at absolute motion frame(s) ``time_idx``.
+
+        Ground-truth-first: uses the retargeting pipeline's own point-cloud interaction fields
+        (motion.object_ref_contact / object_ref_anchor_idx -- real mesh-to-mesh SDF against the
+        captured demo, see gvhmr-fp-pipeline/contact_from_retarget.py) when the loaded motion
+        carries them. Falls back to the runtime nearest-anchor distance threshold
+        (select_grasp_anchor) for motions without it -- keeps older/synthetic clips working.
+        """
+        if self.motion.has_gt_contact:
+            return self.motion.object_ref_anchor_idx[time_idx], self.motion.object_ref_contact[time_idx]
+        anchor_idx, anchor_dist = select_grasp_anchor(anchor_pos, obj_pos)
+        return anchor_idx, anchor_dist < self.grasp_settle_cfg.contact_distance_threshold
+
+    #########################################################################################
     ## Methods that does not fit into setup/step/reset pattern
     #########################################################################################
 
     def init_buffers(self):
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+        # grasp-settle state (per env). Populated in reset() for object clips.
+        self.settle_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.settle_anchor_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.settle_grasp_rel_pos = torch.zeros(self.num_envs, 3, device=self.device)
+        self.settle_grasp_rel_quat = torch.zeros(self.num_envs, 4, device=self.device)
+        self.settle_grasp_rel_quat[:, 3] = 1.0  # identity (xyzw)
+
+        # full-contact weld curriculum ("training wheels"): per-episode assist flag drawn at reset
+        # with an annealed probability, and a global env-step counter driving the anneal.
+        self.weld_assist = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.weld_assist_prob = 0.0
+        self._env_step_counter = 0
+
+        # debug hooks used by the offline probe harness (probe_grasp_settle.py):
+        #   _force_start_timesteps: if set (long tensor, per env, absolute frame index), reset()
+        #     starts every env at that frame instead of sampling a phase.
+        #   _settle_enabled_override: if set (bool), overrides grasp_settle.enable at runtime so the
+        #     harness can A/B baseline vs settle in a single process.
+        self._force_start_timesteps: torch.Tensor | None = None
+        self._settle_enabled_override: bool | None = None
         self.body_pos_relative_w = torch.zeros(
             self.num_envs, len(self.motion_cfg.body_names_to_track), 3, device=self.device
         )  # type: ignore[arg-type]
@@ -1042,6 +1424,19 @@ class MotionCommand(CommandTermBase):
         self.metrics["motion/mpkpe"] = torch.norm(
             self.body_pos_relative_w - self.robot_body_pos_w, dim=-1
         ).mean(dim=-1)
+
+        # Object/grasp health metrics (object clips only). Read together:
+        #   object_held / object_ref_contact = fraction of in-contact frames where the sim box is
+        #   actually near a sim hand. weld_assist_prob tracks the training-wheels anneal.
+        if self.motion.has_object and self._anchor_body_indexes is not None:
+            sim_obj = self.simulator_object_pos_w
+            hand_dist = torch.norm(self.robot_anchor_pos_w - sim_obj.unsqueeze(1), dim=-1).min(dim=1).values
+            _, ref_contact = self._lookup_ref_contact(self.time_steps, self.anchor_pos_w, self.object_pos_w)
+            thr = self.grasp_settle_cfg.contact_distance_threshold
+            self.metrics["motion/object_hand_dist"] = hand_dist
+            self.metrics["motion/object_ref_contact"] = ref_contact.float()
+            self.metrics["motion/object_held"] = ((hand_dist < thr) & ref_contact).float()
+            self.metrics["motion/weld_assist_prob"] = torch.full_like(hand_dist, float(self.weld_assist_prob))
 
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler.get_stats()

@@ -117,6 +117,15 @@ class WholeBodyTrackingManager(BaseTask):
         """Random pushes the robots. Emulates an impulse by setting a randomized base velocity."""
         if len(env_ids) == 0:
             return
+        # grasp-settle grace: never push an env whose settle window is still open — a random impulse
+        # right as the hand<->object contact equilibrates destroys the reset we just repaired.
+        # (The push is skipped, not deferred; the scheduler resamples the next interval as usual.)
+        motion_command = self.command_manager.get_state("motion_command") if self.command_manager else None
+        settle_counter = getattr(motion_command, "settle_counter", None)
+        if settle_counter is not None:
+            env_ids = env_ids[settle_counter[env_ids] == 0]
+            if len(env_ids) == 0:
+                return
         self.need_to_refresh_envs[env_ids] = True
         max_vel_tensor = self._max_push_vel
         if self.randomization_manager is not None:
