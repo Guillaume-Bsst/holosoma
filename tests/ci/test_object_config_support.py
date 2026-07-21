@@ -14,4 +14,5 @@ def test_support_filled_in():
                      support_pos=(-1.583, 0.417, 0.373),
                      support_rot=(0.608, 0.0, 0.0, -0.794))
     assert c.support_urdf_path == "s.urdf"
-    assert c.support_pos[0] == -1.583
+    assert c.support_pos == (-1.583, 0.417, 0.373)
+    assert c.support_rot == (0.608, 0.0, 0.0, -0.794)
