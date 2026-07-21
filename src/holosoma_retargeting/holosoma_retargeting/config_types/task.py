@@ -19,6 +19,13 @@ class TaskConfig:
     # "multi_boxes" for climbing, "ground" for robot_only
     object_name: str | None = None
 
+    # "Both" mode (object_interaction only): ALSO stack the robot_only ground
+    # meshgrid into the interaction mesh, so ground AND object relations are
+    # preserved simultaneously (full-scene runtime comparison; the released
+    # tasks handle one entity at a time -- climbing+augmentation already uses
+    # this concatenation pattern for static boxes).
+    with_ground: bool = False
+
     # Ground meshgrid (robot_only task)
     ground_size: int = 15
     ground_range: tuple[float, float] = (-1.0, 1.0)
