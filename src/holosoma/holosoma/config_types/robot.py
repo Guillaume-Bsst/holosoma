@@ -80,6 +80,15 @@ class ObjectConfig:
     the clip's support_pos_w / support_quat_w at reset. The surface the box is deposited on -- real
     collision + SDF, replacing the terrain-baked table. None = no support object (floor-only clip)."""
 
+    support_pos: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    """Static fallback pose for the support, kept for clips that predate the clip-carried support.
+    Currently unused by the isaacsim path: the spawn poses the support from the clip's
+    support_pos_w / support_quat_w (see isaacsim._setup_scene)."""
+
+    support_rot: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    """Static fallback orientation for the support, quat wxyz. See support_pos: currently unused
+    by the isaacsim path."""
+
 
 @dataclass(frozen=True)
 class RobotConfig:
