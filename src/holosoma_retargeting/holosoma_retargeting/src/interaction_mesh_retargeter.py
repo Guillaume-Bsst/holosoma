@@ -7,6 +7,8 @@ from types import ModuleType
 
 import cvxpy as cp  # type: ignore[import-not-found]
 import mujoco  # type: ignore[import-not-found]
+import os
+
 import numpy as np
 import trimesh
 import viser  # type: ignore[import-not-found]
@@ -372,6 +374,7 @@ class InteractionMeshRetargeter:
         object_points_local_demo,
         object_points_local,
         foot_sticking_sequences,
+        ground_points_world=None,
         q_a_init=None,
         q_nominal_list=None,
         original=True,
@@ -426,8 +429,24 @@ class InteractionMeshRetargeter:
                         object_quat_demo, object_trans_demo, human_mapped_joints
                     )
 
+                # "Both" mode: the ground meshgrid joins the mesh, expressed in the
+                # same frame as the rest of the stack (object frame for object tasks),
+                # on BOTH sides -- demo (source Laplacian) and current (robot-side).
+                entity_pts_demo = object_points_local_demo
+                entity_pts_current = object_points_local
+                if ground_points_world is not None:
+                    ground_demo = transform_points_world_to_local(
+                        object_quat_demo, object_trans_demo, ground_points_world
+                    )
+                    ground_current = transform_points_world_to_local(
+                        object_poses_augmented[i, 3:], object_poses_augmented[i, :3],
+                        ground_points_world,
+                    )
+                    entity_pts_demo = np.vstack([object_points_local_demo, ground_demo])
+                    entity_pts_current = np.vstack([object_points_local, ground_current])
+
                 source_vertices, source_tetrahedra = create_interaction_mesh(
-                    np.vstack([human_mapped_joints_in_object, object_points_local_demo])
+                    np.vstack([human_mapped_joints_in_object, entity_pts_demo])
                 )
                 tetrahedra.append(source_tetrahedra)
 
@@ -454,6 +473,29 @@ class InteractionMeshRetargeter:
                 adj_list = get_adjacency_list(source_tetrahedra, len(source_vertices))
                 target_laplacian = calculate_laplacian_coordinates(source_vertices, adj_list)
 
+                # Sonde de comptage (HOLOSOMA_MESH_STATS=1) : V, tétraèdres, mixage
+                # des arêtes par bloc — humain [0:H), entité1 [H:H+O), entité2 [H+O:V).
+                if i == 0 and os.environ.get("HOLOSOMA_MESH_STATS"):
+                    H = len(human_mapped_joints_in_object)
+                    O = len(object_points_local_demo)
+                    V_stat = len(source_vertices)
+                    blk = lambda k: 0 if k < H else (1 if k < H + O else 2)
+                    names = ("human", "object", "ground")
+                    from collections import Counter
+                    edge_mix = Counter()
+                    for a, nbrs in enumerate(adj_list):
+                        for b in nbrs:
+                            if a < b:
+                                edge_mix[tuple(sorted((blk(a), blk(b))))] += 1
+                    print(f"[MESH_STATS] V={V_stat} (human {H}, object {O}, "
+                          f"ground {V_stat - H - O}), tetra={len(source_tetrahedra)}")
+                    for (ba, bb), n in sorted(edge_mix.items()):
+                        print(f"[MESH_STATS] edges {names[ba]}-{names[bb]}: {n}")
+                    deg = [len(adj_list[k]) for k in range(V_stat)]
+                    print(f"[MESH_STATS] mean degree: human "
+                          f"{np.mean(deg[:H]):.1f}, object {np.mean(deg[H:H+O]):.1f}, "
+                          f"ground {np.mean(deg[H+O:]) if V_stat > H + O else float('nan'):.1f}")
+
                 # Run optimization
                 if original:
                     w_nominal_tracking = self.w_nominal_tracking_init
@@ -466,7 +508,7 @@ class InteractionMeshRetargeter:
                     q_t_last=retargeted_motions[-1],
                     target_laplacian=target_laplacian,
                     adj_list=adj_list,
-                    obj_pts_local=object_points_local,
+                    obj_pts_local=entity_pts_current,
                     foot_sticking=foot_sticking_sequences[i],
                     w_nominal_tracking=w_nominal_tracking,
                     q_a_nominal=(q_nominal_list[i, self.q_a_indices] if q_nominal_list is not None else None),
@@ -738,6 +780,10 @@ class InteractionMeshRetargeter:
             problem.solve(solver=cp.CLARABEL, **solver_kwargs)
 
         if problem.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE):
+            if phis_sc:
+                worst = sorted(phis_sc.items(), key=lambda kv: kv[1])[:5]
+                for key, phi in worst:
+                    print(f"[SelfCollision] phi={phi:+.4f} m  pair={key}")
             raise RuntimeError(f"CVXPY solve failed: {problem.status}")
 
         dqa_star = dqa.value
@@ -799,6 +845,16 @@ class InteractionMeshRetargeter:
             fromto[:] = 0.0
             dist = mujoco.mj_geomDistance(m, d, geom_a, geom_b, threshold, fromto)
             if dist <= threshold:
+                # Robustesse (notre patch) : a dist <= 0 le segment fromto degenere
+                # (normale nulle) -> jacobienne ~nulle -> QP infaisable. On saute la
+                # ligne : le contact exact est un frolement tolere, la contrainte
+                # reprend des que la paire se separe d'un epsilon.
+                if dist <= 0.0:
+                    if _first_iter:
+                        print(f"[SelfCollision] skip degenerate pair "
+                              f"({self._geom_names[geom_a]}, {self._geom_names[geom_b]}) "
+                              f"dist={dist:.4f}")
+                    continue
                 J_rel = self._compute_jacobian_for_contact_relative(
                     m.geom(geom_a),
                     m.geom(geom_b),

@@ -15,6 +15,8 @@ from types import SimpleNamespace
 from typing import Literal
 
 import numpy as np
+import dataclasses
+
 import tyro
 
 src_root = Path(__file__).resolve().parents[2]
@@ -444,6 +446,31 @@ def convert_object_poses_to_mujoco_order(object_poses: np.ndarray) -> np.ndarray
     return object_poses[:, [4, 5, 6, 0, 1, 2, 3]]
 
 
+# Paires d'autocollision G1 par défaut (NOTRE configuration : le released n'en
+# fournit aucune — enable=False et pairs=[] partout). Couverture classique :
+# mains/coudes vs torse/pelvis/jambes, bras-bras, jambes croisées.
+G1_SELF_COLLISION_PAIRS = [
+    ("left_rubber_hand_link", "torso_link"), ("right_rubber_hand_link", "torso_link"),
+    ("left_rubber_hand_link", "pelvis_contour_link"), ("right_rubber_hand_link", "pelvis_contour_link"),
+    ("left_rubber_hand_link", "left_hip_pitch_link"), ("right_rubber_hand_link", "right_hip_pitch_link"),
+    # main-genou RETIREES du preset : frolement legitime des poses accroupies
+    # (pick au sol) -- meme philosophie que nos offsets calibres.
+    ("left_elbow_link", "torso_link"), ("right_elbow_link", "torso_link"),
+    ("left_rubber_hand_link", "right_rubber_hand_link"),
+    ("left_wrist_yaw_link", "right_wrist_yaw_link"),
+    ("left_elbow_link", "right_elbow_link"),
+    ("left_knee_link", "right_knee_link"),
+    ("left_ankle_roll_link", "right_ankle_roll_link"),
+]
+
+
+def _self_collision_with_default_pairs(sc):
+    """enable sans paires -> préset G1 (sinon passthrough)."""
+    if sc is not None and sc.enable and not sc.pairs:
+        return dataclasses.replace(sc, pairs=list(G1_SELF_COLLISION_PAIRS))
+    return sc
+
+
 def build_retargeter_kwargs_from_config(
     retargeter_config: RetargeterConfig,
     constants: SimpleNamespace,
@@ -471,7 +498,7 @@ def build_retargeter_kwargs_from_config(
         "foot_lock": retargeter_config.foot_lock,
         "penetration_tolerance": retargeter_config.penetration_tolerance,
         "foot_sticking_tolerance": retargeter_config.foot_sticking_tolerance,
-        "self_collision": retargeter_config.self_collision,
+        "self_collision": _self_collision_with_default_pairs(retargeter_config.self_collision),
         "step_size": retargeter_config.step_size,
         "visualize": retargeter_config.visualize,
         "debug": retargeter_config.debug,
@@ -702,6 +729,14 @@ def main(cfg: RetargetingConfig) -> None:
     # Determine output path
     dest_res_path = determine_output_path(task_type, save_dir, task_name, cfg.augmentation)
 
+    # "Both" mode: ground meshgrid joins the interaction mesh alongside the object
+    ground_points_world = None
+    if task_type == "object_interaction" and cfg.task_config.with_ground:
+        ground_points_world = create_ground_points(
+            cfg.task_config.ground_range, cfg.task_config.ground_range, cfg.task_config.ground_size
+        )
+        logger.info("Both mode: +%d ground points in the interaction mesh", len(ground_points_world))
+
     # Retarget motion
     logger.info("Starting retargeting...")
     retargeter.retarget_motion(
@@ -710,6 +745,7 @@ def main(cfg: RetargetingConfig) -> None:
         object_poses_augmented=object_poses_augmented,
         object_points_local_demo=object_local_pts_demo,
         object_points_local=object_local_pts,
+        ground_points_world=ground_points_world,
         foot_sticking_sequences=foot_sticking_sequences,
         q_a_init=q_init,
         q_nominal_list=q_nominal,
