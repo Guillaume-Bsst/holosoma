@@ -241,6 +241,7 @@ g1_27dof_wbt_fast_sac = replace(
 g1_29dof_wbt_w_object_actor = replace(
     g1_29dof_wbt_w_object,
     observation=observation.g1_29dof_wbt_observation_w_object_actor,
+    reward=reward.g1_29dof_wbt_reward_w_object_actor,
 )
 
 g1_27dof_wbt_w_object_actor = replace(

@@ -144,4 +144,21 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
     }
 )
 
-__all__ = ["g1_29dof_wbt_fast_sac_reward", "g1_29dof_wbt_reward", "g1_29dof_wbt_reward_w_object"]
+g1_29dof_wbt_reward_w_object_actor = RewardManagerCfg(
+    terms={
+        **g1_29dof_wbt_reward_w_object.terms,
+        # C-D lite: relative hand<->object proximity, beta-weighted (refiner, small weight).
+        "motion_relative_hand_object_position_error_exp": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:motion_relative_hand_object_position_error_exp",
+            params={"sigma": 0.3},
+            weight=0.3,
+        ),
+    }
+)
+
+__all__ = [
+    "g1_29dof_wbt_fast_sac_reward",
+    "g1_29dof_wbt_reward",
+    "g1_29dof_wbt_reward_w_object",
+    "g1_29dof_wbt_reward_w_object_actor",
+]
