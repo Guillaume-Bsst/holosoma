@@ -66,6 +66,18 @@ class WholeBodyTrackingPolicy(BasePolicy):
         if getattr(config.task, "object_motion_file", None):
             self._load_object_motion(config.task.object_motion_file, config.task.motion_prepend_timesteps)
 
+        # Closed-loop object obs (sim2sim): pose of the REAL simulated box streamed by run_sim's
+        # SimulatorBridge. See TaskConfig.live_object_obs. Clip lookup remains the fallback until
+        # the first pose message lands.
+        self._object_pose_sub = None
+        self._live_obs_active = False  # for one-shot logging of the fallback->live transition
+        if getattr(config.task, "live_object_obs", False):
+            from holosoma_inference.utils.clock import PoseSub  # noqa: PLC0415 -- optional feature
+
+            self._object_pose_sub = PoseSub()
+            self._object_pose_sub.start()
+            logger.info("Live object obs enabled: subscribing to run_sim box pose (port 5556)")
+
         # Guard both ways so the two obs shapes never get crossed:
         #  - object config (obj_pos_b in actor_obs) but no clip -> the obs assembly would KeyError on
         #    the missing term; fail early with an actionable message instead.
@@ -73,7 +85,7 @@ class WholeBodyTrackingPolicy(BasePolicy):
         #    dropped; warn so the mismatch is visible.
         actor_terms = self.obs_dict.get("actor_obs", [])
         wants_object = "obj_pos_b" in actor_terms
-        if wants_object and self._obj_pos_b_traj is None:
+        if wants_object and self._obj_pos_b_traj is None and self._object_pose_sub is None:
             raise ValueError(
                 "Inference config expects object observations (obj_pos_b/obj_ori_b) but no "
                 "--task.object-motion-file was given. Pass the training clip NPZ, or use "
@@ -321,17 +333,39 @@ class WholeBodyTrackingPolicy(BasePolicy):
         # actions
         current_obs_buffer_dict["actions"] = self.last_policy_action
 
-        # obj_pos_b / obj_ori_b (object-carry policies): box pose in the reference-root frame, looked
-        # up from the clip at the current motion timestep (see _load_object_motion). For real
-        # deployment substitute a live mocap/RGB-D box pose here instead of the clip lookup.
-        if self._obj_pos_b_traj is not None:
+        # obj_pos_b / obj_ori_b (object-carry policies). Three sources, in priority order:
+        #  1. zero_object_obs debug override (OOD for object-actor checkpoints -- see TaskConfig);
+        #  2. live_object_obs: the REAL simulated box (run_sim pose stream) relative to the robot's
+        #     REAL torso -- same frames as training's obj_pos_b/obj_ori_b terms, closes the loop;
+        #  3. clip lookup at the current motion timestep (open loop; also the fallback of 2 until
+        #     the first pose message arrives). For real deployment a mocap/RGB-D box pose would
+        #     feed source 2's channel.
+        if self._obj_pos_b_traj is not None or self._object_pose_sub is not None:
+            live_pose = self._object_pose_sub.get_pose() if self._object_pose_sub is not None else None
             if getattr(self.config.task, "zero_object_obs", False):
                 current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
                 current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
-            else:
+            elif live_pose is not None:
+                if not self._live_obs_active:
+                    self._live_obs_active = True
+                    logger.info(colored("Live object obs active: box pose now from run_sim stream", "green"))
+                box_pos, box_quat_wxyz, torso_pos, torso_quat_wxyz = live_pose
+                torso_quat_wxyz = torso_quat_wxyz[None, :]
+                rel_pos = quat_rotate_inverse(torso_quat_wxyz, (box_pos - torso_pos)[None, :])
+                rel_quat = subtract_frame_transforms(torso_quat_wxyz, box_quat_wxyz[None, :])
+                rel_ori6 = matrix_from_quat(rel_quat)[..., :2].reshape(1, -1)
+                current_obs_buffer_dict["obj_pos_b"] = rel_pos.astype(np.float32)
+                current_obs_buffer_dict["obj_ori_b"] = rel_ori6.astype(np.float32)
+            elif self._obj_pos_b_traj is not None:
                 idx = int(np.clip(int(round(self.curr_motion_timestep)), 0, self._obj_pos_b_traj.shape[0] - 1))
                 current_obs_buffer_dict["obj_pos_b"] = self._obj_pos_b_traj[idx : idx + 1]
                 current_obs_buffer_dict["obj_ori_b"] = self._obj_ori_b_traj[idx : idx + 1]
+            else:
+                # live mode without clip fallback, before the first message: hold zeros and warn --
+                # transient by construction (run_sim publishes every physics step once up).
+                logger.warning("live_object_obs: no box pose received yet and no clip fallback; sending zeros")
+                current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
+                current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
 
         return current_obs_buffer_dict
 

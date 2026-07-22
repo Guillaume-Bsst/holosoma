@@ -118,6 +118,20 @@ class PinocchioRobot:
 
         return np.expand_dims(quaternion.coeffs(), axis=0)  # xyzw, (1, 4)
 
+    def fk_and_get_ref_body_pose_in_world(self, configuration: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Full ref-body (torso) world pose: (pos (1, 3), quat xyzw (1, 4)).
+
+        Same fk as fk_and_get_ref_body_orientation_in_world but also returns the translation --
+        needed by live object obs to express the box pose in the torso frame like training does.
+        Position is only meaningful when configuration[:3] holds the true world root position
+        (sim2sim: yes; real robot: needs odometry).
+        """
+        pin.framesForwardKinematics(self.robot_model, self.robot_data, configuration)
+        ref_body_pose_in_world = self.robot_data.oMf[self.ref_body_frame_id]
+        quaternion = pin.Quaternion(ref_body_pose_in_world.rotation)
+        pos = np.expand_dims(np.asarray(ref_body_pose_in_world.translation), axis=0)  # (1, 3)
+        return pos, np.expand_dims(quaternion.coeffs(), axis=0)  # xyzw, (1, 4)
+
     @staticmethod
     def _create_xml_from_urdf(urdf_text: str) -> str:
         """Strip visuals/collisions from URDF text and return XML text."""

@@ -81,6 +81,54 @@ class ClockPub:
         self.enabled = False
 
 
+class PosePub:
+    """Object+ref-body pose publisher (ZMQ PUB) for object-carry sim-to-sim.
+
+    Publishes the free box's AND the robot ref body's (torso) REAL world poses so the inference
+    side can compute closed-loop obj_pos_b/obj_ori_b (WholeBodyTrackingPolicy
+    --task.live-object-obs). Both poses come from the simulator ground truth -- the same frames
+    training's obj_pos_b/obj_ori_b terms use (simulator box vs simulator torso). The Unitree low
+    state carries no world root position, so the torso pose MUST come from this side.
+    Message: 14 floats "bx by bz bqw bqx bqy bqz tx ty tz tqw tqx tqy tqz" (world, wxyz quats).
+    """
+
+    def __init__(self, port: int = 5556) -> None:
+        self.port: int = port
+        self.context: zmq.Context | None = None
+        self.socket: zmq.Socket | None = None
+        self.enabled: bool = False
+
+    def start(self) -> None:
+        try:
+            self.context = zmq.Context()
+            self.socket = self.context.socket(zmq.PUB)
+            self.socket.bind(f"tcp://*:{self.port}")
+            self.enabled = True
+            logger.info(f"Object-pose publisher started on port {self.port}")
+        except Exception as e:
+            logger.error(f"Failed to start object-pose publisher: {e}")
+            self.enabled = False
+
+    def publish(self, box_pos, box_quat_wxyz, ref_pos, ref_quat_wxyz) -> None:
+        """Publish box + ref-body world poses. Each pos: (3,), each quat: (4,) [w,x,y,z]."""
+        if not self.enabled or not self.socket:
+            return
+        try:
+            vals = [*box_pos, *box_quat_wxyz, *ref_pos, *ref_quat_wxyz]
+            self.socket.send_string(" ".join(str(v) for v in vals), zmq.NOBLOCK)
+        except zmq.Again:
+            pass
+        except Exception as e:
+            logger.warning(f"Object-pose publish failed: {e}")
+
+    def close(self) -> None:
+        if self.socket:
+            self.socket.close()
+        if self.context:
+            self.context.term()
+        self.enabled = False
+
+
 class ClockSub:
     """Clock subscriber that receives elapsed milliseconds via ZMQ.
 

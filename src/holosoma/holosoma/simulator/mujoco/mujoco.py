@@ -1397,6 +1397,37 @@ class MuJoCo(BaseSimulator):
         assert self.root_data is not None
         return self.root_data.time
 
+    def get_free_box_and_ref_pose(self, ref_body_name: str = "torso_link"):
+        """World poses of the run_sim free box AND the robot ref body, or None if no box.
+
+        Read by SimulatorBridge.step() to publish both REAL simulated poses for closed-loop
+        object observations (inference --task.live-object-obs): the box relative to the torso is
+        exactly what training's obj_pos_b/obj_ori_b observe, and the Unitree low state has no
+        world root position so the torso pose must come from the simulator ground truth.
+        ClassicBackend CPU state only -- sim2sim runs single-env classic.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None
+            (box_pos (3,), box_quat_wxyz (4,), ref_pos (3,), ref_quat_wxyz (4,)) in world frame,
+            or None when no box was spawned.
+        """
+        if not hasattr(self, "_free_box_body_id"):
+            assert self.root_model is not None
+            self._free_box_body_id = mujoco.mj_name2id(self.root_model, mujoco.mjtObj.mjOBJ_BODY, "free_box")
+            self._ref_body_id_for_pose = mujoco.mj_name2id(
+                self.root_model, mujoco.mjtObj.mjOBJ_BODY, self._get_prefixed_name(ref_body_name)
+            )
+        if self._free_box_body_id == -1 or self._ref_body_id_for_pose == -1:
+            return None
+        assert self.root_data is not None
+        return (
+            self.root_data.xpos[self._free_box_body_id].copy(),
+            self.root_data.xquat[self._free_box_body_id].copy(),  # [w,x,y,z]
+            self.root_data.xpos[self._ref_body_id_for_pose].copy(),
+            self.root_data.xquat[self._ref_body_id_for_pose].copy(),  # [w,x,y,z]
+        )
+
     def get_dof_forces(self, env_id: int = 0) -> torch.Tensor:
         """Get DOF forces for a specific environment.
 
