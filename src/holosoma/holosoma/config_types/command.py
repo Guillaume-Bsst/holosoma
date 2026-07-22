@@ -357,6 +357,11 @@ class MotionConfig:
     start_at_timestep_zero_prob: float = 0.0
     """Probability of starting at timestep zero."""
 
+    eval_start_at_zero: bool = False
+    """In eval (is_evaluating): False (default) = start at a RANDOM frame (RSI, as in
+    training); True = force frame 0 (deterministic/reproducible eval). Affects ONLY the
+    eval -- in training the phase is already random regardless of this flag."""
+
     freeze_at_timestep_zero_prob: float = 0.0
     """When starting at timestep 0, probability of freezing motion counter at 0 (not advancing).
     This makes the robot practice holding the initial pose. Only applies when episode starts at timestep 0.
