@@ -33,6 +33,7 @@ from holosoma.utils.rotations import (
     yaw_quat,
 )
 from holosoma.utils.simulator_config import SimulatorType
+from holosoma.utils.contact_targets import beta_from_distance, relative_position_in_object_frame
 
 
 #########################################################################################################
@@ -855,6 +856,22 @@ class MotionCommand(CommandTermBase):
                     f"weld={self.grasp_settle_cfg.weld_object_during_settle}"
                 )
 
+        # 3c. C-D lite: derive the relative hand<->object reference and the beta weight once.
+        # Done AFTER the default-pose transitions (motion already extended) -> indexed by time_steps.
+        if getattr(self.motion, "has_object", False):
+            self.hand_body_indexes = self._get_index_of_a_in_b(
+                self.motion_cfg.hand_body_names, robot_body_names, self.device
+            )  # (H,) sim body order, aligned with _rigid_body_pos AND self.motion.body_pos_w
+            n_hand = self.hand_body_indexes.numel()
+            wrist_pos_ref = self.motion.body_pos_w[:, self.hand_body_indexes]           # (T, H, 3)
+            obj_pos_ref = self.motion.object_pos_w[:, None, :].repeat(1, n_hand, 1)     # (T, H, 3)
+            obj_quat_ref = self.motion.object_quat_w[:, None, :].repeat(1, n_hand, 1)   # (T, H, 4)
+            self._hand_obj_rel_pos_ref = relative_position_in_object_frame(
+                wrist_pos_ref, obj_pos_ref, obj_quat_ref
+            )  # (T, H, 3)
+            d_demo = torch.norm(wrist_pos_ref - obj_pos_ref, dim=-1)                    # (T, H)
+            self._hand_obj_beta = beta_from_distance(d_demo, self.motion_cfg.beta_scale)  # (T, H)
+
         # 4. get the adaptive timesteps sampler
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler = AdaptiveTimestepsSampler(
@@ -1646,6 +1663,28 @@ class MotionCommand(CommandTermBase):
                 f"[physicality curriculum] success EMA cleared {cfg.physicality_success_threshold:.2f} "
                 f"-> box alpha ({mode}) -> {self._physicality_alpha:.3f} (1=kinematic, 0=fully physical)"
             )
+
+    #########################################################################################
+    ## C-D lite: relative hand<->object proximity
+    #########################################################################################
+    @property
+    def hand_obj_rel_pos_ref(self) -> torch.Tensor:
+        """(E, H, 3) baked reference: hand position in the object frame, indexed by time_steps."""
+        return self._hand_obj_rel_pos_ref[self.time_steps]
+
+    @property
+    def hand_obj_beta(self) -> torch.Tensor:
+        """(E, H) baked proximity weight, indexed by time_steps."""
+        return self._hand_obj_beta[self.time_steps]
+
+    @property
+    def hand_obj_rel_pos_cur(self) -> torch.Tensor:
+        """(E, H, 3) live: sim hand position in the sim object frame (one rigid transform per hand)."""
+        wrist_pos = self._env.simulator._rigid_body_pos[:, self.hand_body_indexes, :]   # (E, H, 3) world
+        n_hand = self.hand_body_indexes.numel()
+        obj_pos = self.simulator_object_pos_w[:, None, :].repeat(1, n_hand, 1)           # (E, H, 3)
+        obj_quat = self.simulator_object_quat_w[:, None, :].repeat(1, n_hand, 1)         # (E, H, 4) xyzw
+        return relative_position_in_object_frame(wrist_pos, obj_pos, obj_quat)
 
     #########################################################################################
     ## Methods that does not fit into setup/step/reset pattern
