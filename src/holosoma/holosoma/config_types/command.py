@@ -391,6 +391,13 @@ class MotionConfig:
     """Duration in seconds of the post-appended interpolation phase.
     Only used if enable_default_pose_append is True."""
 
+    # C-D lite : proximité relative mains↔objet (terme reward gaté sur le variant _actor)
+    beta_scale: float = 0.1
+    """Échelle (m) de la décroissance du poids β = exp(-d_demo/beta_scale) ; ~1 au contact."""
+
+    hand_body_names: list[str] = field(default_factory=lambda: ["left_wrist_yaw_link", "right_wrist_yaw_link"])
+    """Liens des mains suivis par le terme C-D lite (repère objet)."""
+
     # noise related
     noise_to_initial_pose: NoiseToInitialPoseConfig = field(default_factory=NoiseToInitialPoseConfig)
 
