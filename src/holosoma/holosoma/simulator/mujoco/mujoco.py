@@ -21,7 +21,7 @@ from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
 from holosoma.simulator.mujoco.backends import WARP_AVAILABLE, ClassicBackend, WarpBackend
 from holosoma.simulator.mujoco.command_registry import CommandRegistry
 from holosoma.simulator.mujoco.fields import prepare_fields, prepare_manager_fields
-from holosoma.simulator.mujoco.object_spawn import resolve_box_spawn
+from holosoma.simulator.mujoco.object_spawn import resolve_box_spawn, resolve_support_spawn
 from holosoma.simulator.mujoco.scene_manager import MujocoSceneManager
 from holosoma.simulator.mujoco.tensor_views import (
     create_base_linear_acceleration_view,
@@ -409,6 +409,13 @@ class MuJoCo(BaseSimulator):
         if getattr(sim_cfg, "add_box", False):
             pos, quat, half_extent, mass = resolve_box_spawn(sim_cfg, self.robot_config)
             self.scene_manager.add_free_box(pos, half_extent, mass, quat=quat)
+
+        # Optional static support table (SimEngineConfig.add_support): the surface the clip places
+        # the box on, anchored relative to the robot like the free box. Usual floor stays.
+        if getattr(sim_cfg, "add_support", False):
+            support = resolve_support_spawn(sim_cfg, self.robot_config)
+            if support is not None:
+                self.scene_manager.add_static_box("support_table", support[0], support[1], support[2])
 
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.

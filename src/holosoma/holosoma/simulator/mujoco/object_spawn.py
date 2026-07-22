@@ -109,20 +109,87 @@ def _compute_box_spawn_pose(
     obj_quat_w = data["object_quat_w"]  # wxyz
 
     t = int(np.clip(timestep, 0, joint_pos.shape[0] - 1))
-    root_pos = joint_pos[t, :3]
-    root_quat = joint_pos[t, 3:7]  # wxyz
-    root_quat_conj = _quat_conj_wxyz(root_quat)
+    return _reanchor_yawxy(obj_pos_w[t], obj_quat_w[t], joint_pos[t, :7], robot_init_pos, robot_init_rot_xyzw)
 
-    rel_pos = _quat_rotate_wxyz(root_quat_conj, obj_pos_w[t] - root_pos)
-    rel_quat = _quat_mul_wxyz(root_quat_conj, obj_quat_w[t])
 
-    robot_rot_wxyz = np.array(
-        [robot_init_rot_xyzw[3], robot_init_rot_xyzw[0], robot_init_rot_xyzw[1], robot_init_rot_xyzw[2]]
+def _yaw_of_wxyz(q: np.ndarray) -> float:
+    w, x, y, z = q
+    return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+
+
+def _reanchor_yawxy(
+    clip_pos: np.ndarray,
+    clip_quat_wxyz: np.ndarray,
+    clip_root: np.ndarray,
+    robot_init_pos,
+    robot_init_rot_xyzw,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map a clip-world pose into this scene, anchoring by yaw + XY only.
+
+    Rotates/translates about the clip's root-vs-robot-init delta restricted to yaw and the ground
+    plane: heights stay EXACTLY as in the clip (both floors are at z=0), so nothing sinks into or
+    hovers over the ground when the robot init z differs slightly from the clip's root z.
+    """
+    root_yaw = _yaw_of_wxyz(clip_root[3:7])
+    robot_yaw = _yaw_of_wxyz(
+        np.array([robot_init_rot_xyzw[3], robot_init_rot_xyzw[0], robot_init_rot_xyzw[1], robot_init_rot_xyzw[2]])
     )
-    world_pos = np.asarray(robot_init_pos, dtype=np.float64) + _quat_rotate_wxyz(robot_rot_wxyz, rel_pos)
-    world_quat = _quat_mul_wxyz(robot_rot_wxyz, rel_quat)
+    dyaw = robot_yaw - root_yaw
+    c, s = np.cos(dyaw), np.sin(dyaw)
+
+    rel_xy = np.asarray(clip_pos[:2], dtype=np.float64) - np.asarray(clip_root[:2], dtype=np.float64)
+    world_xy = np.asarray(robot_init_pos[:2], dtype=np.float64) + np.array(
+        [c * rel_xy[0] - s * rel_xy[1], s * rel_xy[0] + c * rel_xy[1]]
+    )
+    world_pos = np.array([world_xy[0], world_xy[1], float(clip_pos[2])])
+
+    dyaw_quat = np.array([np.cos(dyaw / 2.0), 0.0, 0.0, np.sin(dyaw / 2.0)])
+    world_quat = _quat_mul_wxyz(dyaw_quat, np.asarray(clip_quat_wxyz, dtype=np.float64))
 
     return world_pos, world_quat
+
+
+def resolve_support_spawn(
+    sim_cfg: SimEngineConfig, robot_config: RobotConfig
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Resolve (pos[3], quat_wxyz[4], half_extents[3]) for the static support table, or None.
+
+    Implements SimEngineConfig.add_support: reads the support mesh (clip-world coordinates, e.g.
+    femto14_support_world.obj), takes its axis-aligned bounding box, and re-anchors it relative to
+    the robot's init pose with the same yaw+XY mapping as the free box -- so the table appears at
+    its usual spot RELATIVE to the robot without touching the floor, the robot spawn, or the yaw.
+    Collision-wise a box geom is exact (unlike a non-convex mesh, which MuJoCo would collide as
+    its convex hull -- the failure mode that pushed the robot around when the whole terrain mesh
+    was loaded).
+    """
+    if not (sim_cfg.add_support and sim_cfg.support_obj_file and sim_cfg.object_motion_file):
+        return None
+
+    mesh_path = resolve_data_file_path(sim_cfg.support_obj_file)
+    verts = []
+    with open(mesh_path) as f:
+        for line in f:
+            if line.startswith("v "):
+                verts.append([float(x) for x in line.split()[1:4]])
+    v = np.asarray(verts, dtype=np.float64)
+    lo, hi = v.min(axis=0), v.max(axis=0)
+    center_clip = (lo + hi) / 2.0
+    half_extents = (hi - lo) / 2.0
+
+    data = np.load(resolve_data_file_path(sim_cfg.object_motion_file))
+    t = int(np.clip(sim_cfg.object_motion_start_timestep, 0, data["joint_pos"].shape[0] - 1))
+    pos, quat = _reanchor_yawxy(
+        center_clip,
+        np.array([1.0, 0.0, 0.0, 0.0]),
+        data["joint_pos"][t, :7],
+        robot_config.init_state.pos,
+        robot_config.init_state.rot,
+    )
+    logger.info(
+        f"Support table anchored from '{sim_cfg.support_obj_file}': pos={pos.round(3).tolist()}, "
+        f"half_extents={half_extents.round(3).tolist()}"
+    )
+    return pos, quat, half_extents
 
 
 def robot_init_state_from_clip(sim_cfg: SimEngineConfig, robot_config: RobotConfig) -> RobotConfig | None:

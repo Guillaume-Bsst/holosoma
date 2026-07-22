@@ -386,6 +386,26 @@ class MujocoSceneManager:
         )
         logger.info(f"Spawned free box at {list(pos)} (half_extent={half_extent} m, mass={mass} kg)")
 
+    def add_static_box(self, name: str, pos, quat, half_extents) -> None:
+        """Add a STATIC box (no joint) -- e.g. the clip's support table for object-carry sim2sim.
+
+        Environment collision class (contype=2, conaffinity=1) like the terrain, so it collides
+        with both the robot and the free box. An exact box geom is used instead of the support
+        mesh because MuJoCo collides meshes as convex hulls (a non-convex mesh would produce
+        phantom collisions).
+        """
+        body = self.world_spec.worldbody.add_body(name=name, pos=list(pos), quat=list(quat))
+        geom = body.add_geom(
+            name=f"{name}_geom",
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=list(half_extents),
+            rgba=[0.55, 0.42, 0.28, 1.0],
+            friction=[0.9, 0.01, 0.001],
+        )
+        geom.contype = 2
+        geom.conaffinity = 1
+        logger.info(f"Added static box '{name}' at {list(pos)} (half_extents={list(half_extents)})")
+
     def _apply_collision_settings(self, robot_spec: mujoco.MjSpec, robot_config: RobotConfig) -> None:
         """Apply collision settings based on unified self_collisions configuration.
 

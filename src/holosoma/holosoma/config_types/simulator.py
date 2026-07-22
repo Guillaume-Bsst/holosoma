@@ -175,11 +175,22 @@ class SimEngineConfig:
 
     spawn_robot_at_clip_start: bool = False
     """Spawn the robot at the clip's frame-0 root pose (x, y and yaw from object_motion_file;
-    z, roll, pitch kept from init_state). Needed when the scene is loaded in the clip's world
-    coordinates -- i.e. terrain:terrain-load-obj with the training terrain mesh (floor + table):
-    the table sits at a fixed world spot, so robot, box and terrain only line up if the robot
-    starts where the clip starts. The box auto-placement then reproduces the clip's world pose
-    exactly (re-anchoring through the robot's init pose becomes the identity)."""
+    z, roll, pitch kept from init_state). Only needed when loading a scene in raw clip-world
+    coordinates. NOT needed with add_support below, which re-anchors the table to the robot
+    instead. Avoid loading the full terrain mesh via terrain:terrain-load-obj in MuJoCo: mesh
+    collisions use the CONVEX HULL, so a non-convex floor+table mesh becomes an invisible ramp
+    that shoves the robot around."""
+
+    add_support: bool = False
+    """run_sim only: spawn the clip's support table as a STATIC box in the scene (the surface the
+    clip places the box on at the end). Sized from support_obj_file's bounding box and positioned
+    relative to the robot init pose via the same clip anchoring as the free box -- usual floor,
+    usual robot spawn, table where the policy expects it. Requires object_motion_file."""
+
+    support_obj_file: str | None = None
+    """Support mesh in clip-world coordinates (e.g. holosoma/data/motions/g1_29dof/
+    whole_body_tracking/femto14_support_world.obj). Its AABB gives the table's size and clip
+    position; collision is an exact box geom (see add_support)."""
 
 
 @dataclass(frozen=True)
