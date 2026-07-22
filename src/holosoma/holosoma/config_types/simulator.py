@@ -141,17 +141,37 @@ class SimEngineConfig:
 
     add_box: bool = False
     """run_sim only: spawn a free rigid box in the scene (for object-carry sim-to-sim visualisation).
-    Purely physical (falls if not held) -- the policy is not affected by it. Toggle off to run without."""
+    Purely physical (falls if not held) -- the policy is not affected by it (holosoma_inference's
+    --task.object-motion-file feeds the policy the box pose from the reference clip instead, see
+    WholeBodyTrackingPolicy._load_object_motion). When --robot.object.object-urdf-path is set (i.e.
+    you're playing back an object-carry checkpoint), geometry/mass are read from that URDF and, if
+    object_motion_file below is also set, the spawn pose is anchored from the clip -- see
+    simulator/mujoco/object_spawn.py. Toggle off to run without any box."""
 
     box_pos: tuple[float, float, float] = (0.4, 0.0, 0.2)
-    """Initial world position of the spawned box (m). Default: resting on the ground in front of the
-    robot (z just above half-extent so it settles, not floating). Move it wherever you want to see it."""
+    """Fallback initial world position of the spawned box (m), used only when object_motion_file is
+    unset. Default: resting on the ground in front of the robot (z just above half-extent so it
+    settles, not floating). Move it wherever you want to see it."""
 
     box_half_extent: float = 0.16
-    """Half-side of the spawned cube (m). Default 0.16 = the 0.32 m box32."""
+    """Fallback half-side of the spawned cube (m), used only when --robot.object.object-urdf-path is
+    unset (no object URDF to measure the mesh from). Default 0.16 = the 0.32 m box32."""
 
     box_mass: float = 0.811
-    """Mass of the spawned box (kg). Default = the real measured box."""
+    """Fallback mass of the spawned box (kg), used only when --robot.object.object-urdf-path is unset.
+    Default = the real measured box."""
+
+    object_motion_file: str | None = None
+    """Training clip NPZ used to auto-place the spawned box (same file as holosoma_inference's
+    --task.object-motion-file). The box pose relative to the robot root at
+    object_motion_start_timestep is read from the clip and re-anchored to THIS scene's actual
+    robot.init_state pose, so the box appears where the policy expects it relative to the robot
+    regardless of where the robot happens to stand here. Requires add_box=True; falls back to the
+    static box_pos above (identity orientation) when unset."""
+
+    object_motion_start_timestep: int = 0
+    """Clip frame used for the auto-placement above. Match --task.motion-start-timestep on the
+    inference side so the box lines up with the first frame the policy will actually track."""
 
 
 @dataclass(frozen=True)

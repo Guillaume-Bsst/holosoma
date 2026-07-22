@@ -66,6 +66,56 @@ In policy terminal, press `m` to start the motion clip. The robot will begin tra
 
 ---
 
+## Object-Carry Variant (WBT + box)
+
+For checkpoints trained with `exp:g1-29dof-wbt-w-object-actor` (actor observes a carried box). The box's
+physical presence in MuJoCo and the policy's box observation are two independent things:
+
+- **MuJoCo side**: `run_sim.py` can spawn a free (physical, unheld-by-default) rigid box so you can see the
+  robot actually interact with something. Its geometry/mass are read straight from the object URDF the
+  checkpoint was trained with, and — if you also point it at the training clip — its spawn pose is
+  auto-anchored to the robot's actual spawn position in this scene (see `simulator/mujoco/object_spawn.py`).
+- **Policy side**: `WholeBodyTrackingPolicy` does NOT perceive the physical box live. `--task.object-motion-file`
+  feeds it the box pose recorded in the training clip, indexed by motion timestep, exactly like training's
+  kinematic/contact-assisted box. This is a sim-to-sim shortcut (no perception pipeline needed) — a real
+  deployment would substitute a live mocap/RGB-D box pose here instead.
+
+### 1. Start MuJoCo Environment (with box)
+
+```bash
+source scripts/source_mujoco_setup.sh
+python src/holosoma/holosoma/run_sim.py simulator:mujoco robot:g1-29dof \
+    --robot.object.object-urdf-path holosoma/data/motions/g1_29dof/whole_body_tracking/objects_box36.urdf \
+    --simulator.config.sim.add-box True \
+    --simulator.config.sim.object-motion-file holosoma/data/motions/g1_29dof/whole_body_tracking/femto14_box36_w_obj_gtcontact_slow16.npz
+```
+
+Swap `objects_box36.urdf` / the clip for whatever object-carry checkpoint you're playing back — geometry and
+mass are derived from the URDF automatically, no need to hand-tune a half-extent/mass per object.
+
+### 2. Launch the Policy (object-obs variant)
+
+```bash
+source scripts/source_inference_setup.sh
+python3 src/holosoma_inference/holosoma_inference/run_policy.py inference:g1-29dof-wbt-w-object \
+    --task.model-path <path-to-exported-object-checkpoint>.onnx \
+    --task.object-motion-file src/holosoma/holosoma/data/motions/g1_29dof/whole_body_tracking/femto14_box36_w_obj_gtcontact_slow16.npz \
+    --task.motion-prepend-timesteps <N> \
+    --task.no-use-joystick --task.use-sim-time --task.rl-rate 50 --task.interface lo
+```
+
+- `--task.model-path`: export via `eval_agent.py`'s `--training.export-onnx` (writes to
+  `<checkpoint_dir>/exported/model_XXXXX.onnx`) or `algo.export(...)`.
+- `--task.motion-prepend-timesteps <N>`: must match the training clip's `default_pose_prepend` window in
+  POLICY control steps (`default_pose_prepend_duration_s * rl_rate`, not seconds) — see
+  `TaskConfig.motion_prepend_timesteps` docstring. Get this from the training run's
+  `MotionConfig.default_pose_prepend_duration_s`.
+- Steps 3-6 above (stiff mode, gantry, start policy, start clip) are unchanged.
+- `--task.zero-object-obs True` is a debugging isolation switch: if the robot holds up fine with it but falls
+  with real object obs, the bug is in the object-obs frame/convention rather than a general sim2sim gap.
+
+---
+
 ## MuJoCo Controls Reference
 
 **Enter these commands in the MuJoCo window** (not the policy terminal):
