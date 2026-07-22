@@ -11,6 +11,7 @@ from holosoma.config_types.reward import RewardTermCfg
 from holosoma.managers.command.terms.wbt import MotionCommand
 from holosoma.managers.reward.base import RewardTermBase
 from holosoma.utils.rotations import quat_error_magnitude
+from holosoma.utils.contact_targets import beta_weighted_position_reward
 
 if TYPE_CHECKING:
     from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
@@ -299,6 +300,20 @@ def support_surface_contact_error_exp(
         -torch.square(d_ref - d_current) / sigma_dist**2
     )
     return torch.where(ref_contact, reward, torch.zeros_like(reward))
+
+
+def motion_relative_hand_object_position_error_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
+    """C-D lite: hand position in the object frame vs the baked reference, beta-weighted.
+
+    Bounded in (0, 1]; neutral out of contact (beta->0 => reward->1). Gated on the `_actor` variant.
+    """
+    motion_command = _get_motion_command_and_assert_type(env)
+    return beta_weighted_position_reward(
+        motion_command.hand_obj_rel_pos_cur,
+        motion_command.hand_obj_rel_pos_ref,
+        motion_command.hand_obj_beta,
+        sigma,
+    )
 
 
 # ================================================================================================
