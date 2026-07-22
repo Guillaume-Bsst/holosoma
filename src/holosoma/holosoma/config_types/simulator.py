@@ -173,6 +173,14 @@ class SimEngineConfig:
     """Clip frame used for the auto-placement above. Match --task.motion-start-timestep on the
     inference side so the box lines up with the first frame the policy will actually track."""
 
+    spawn_robot_at_clip_start: bool = False
+    """Spawn the robot at the clip's frame-0 root pose (x, y and yaw from object_motion_file;
+    z, roll, pitch kept from init_state). Needed when the scene is loaded in the clip's world
+    coordinates -- i.e. terrain:terrain-load-obj with the training terrain mesh (floor + table):
+    the table sits at a fixed world spot, so robot, box and terrain only line up if the robot
+    starts where the clip starts. The box auto-placement then reproduces the clip's world pose
+    exactly (re-anchoring through the robot's init pose becomes the identity)."""
+
 
 @dataclass(frozen=True)
 class IsaacGymPhysicsConfig:

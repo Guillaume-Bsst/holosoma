@@ -125,6 +125,37 @@ def _compute_box_spawn_pose(
     return world_pos, world_quat
 
 
+def robot_init_state_from_clip(sim_cfg: SimEngineConfig, robot_config: RobotConfig) -> RobotConfig | None:
+    """Return a robot config whose init_state matches the clip's frame-0 root pose, or None.
+
+    Implements SimEngineConfig.spawn_robot_at_clip_start: x, y and yaw come from
+    object_motion_file's frame 0 (the same anchoring training's default-pose prepend uses);
+    z, roll and pitch are kept from the configured init_state. Returns None when the flag or
+    the motion file is absent.
+    """
+    if not (sim_cfg.spawn_robot_at_clip_start and sim_cfg.object_motion_file):
+        return None
+
+    import dataclasses  # noqa: PLC0415 -- only needed on this path
+
+    data = np.load(resolve_data_file_path(sim_cfg.object_motion_file))
+    root = np.asarray(data["joint_pos"], dtype=np.float64)[0, :7]  # [pos(3), quat wxyz(4)]
+    w, x, y, z = root[3:7]
+    yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+
+    init = robot_config.init_state
+    new_pos = [float(root[0]), float(root[1]), init.pos[2]]
+    # yaw-only rotation, xyzw (init roll/pitch are flat for humanoid spawn configs)
+    new_rot = [0.0, 0.0, float(np.sin(yaw / 2.0)), float(np.cos(yaw / 2.0))]
+    logger.info(
+        f"Robot init overridden from clip frame 0: pos={[round(v, 3) for v in new_pos]}, "
+        f"yaw={np.degrees(yaw):.1f} deg (spawn_robot_at_clip_start)"
+    )
+    return dataclasses.replace(
+        robot_config, init_state=dataclasses.replace(init, pos=new_pos, rot=new_rot)
+    )
+
+
 def resolve_box_spawn(
     sim_cfg: SimEngineConfig, robot_config: RobotConfig
 ) -> tuple[np.ndarray, np.ndarray, float, float]:
