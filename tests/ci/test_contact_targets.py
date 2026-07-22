@@ -70,3 +70,23 @@ def test_reward_ignores_hand_with_zero_beta():
     beta = torch.tensor([[0.0, 1.0]])
     r = beta_weighted_position_reward(rel_cur, rel_ref, beta, sigma=0.3)
     assert torch.allclose(r, torch.ones(1), atol=1e-6)
+
+
+def test_reward_neutral_when_all_beta_zero():
+    # free space: every hand far away -> beta=0 -> neutral reward (=1), no NaN
+    rel_cur = torch.full((1, 2, 3), 5.0)
+    rel_ref = torch.zeros(1, 2, 3)
+    beta = torch.zeros(1, 2)
+    r = beta_weighted_position_reward(rel_cur, rel_ref, beta, sigma=0.3)
+    assert torch.isfinite(r).all()
+    assert torch.allclose(r, torch.ones(1), atol=1e-6)
+
+
+def test_relative_position_rotation_and_translation():
+    # object at (1,0,0), rotated +90 deg about z; world point (1,1,0) -> object-local (1,0,0)
+    point = torch.tensor([[1.0, 1.0, 0.0]])
+    obj_pos = torch.tensor([[1.0, 0.0, 0.0]])
+    s = 0.5**0.5
+    obj_quat = torch.tensor([[0.0, 0.0, s, s]])  # xyzw, +90 deg about z
+    rel = relative_position_in_object_frame(point, obj_pos, obj_quat)
+    assert torch.allclose(rel, torch.tensor([[1.0, 0.0, 0.0]]), atol=1e-5)
