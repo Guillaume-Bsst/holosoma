@@ -12,6 +12,7 @@ from loguru import logger
 from holosoma.config_types.command import MotionConfig, NoiseToInitialPoseConfig
 from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
 from holosoma.managers.command.base import CommandTermBase
+from holosoma.utils.contact_targets import beta_from_distance, relative_position_in_object_frame
 from holosoma.utils.file_cache import cached_open
 from holosoma.utils.grasp_settle import (
     anneal_prob,
@@ -33,7 +34,6 @@ from holosoma.utils.rotations import (
     yaw_quat,
 )
 from holosoma.utils.simulator_config import SimulatorType
-from holosoma.utils.contact_targets import beta_from_distance, relative_position_in_object_frame
 
 
 #########################################################################################################

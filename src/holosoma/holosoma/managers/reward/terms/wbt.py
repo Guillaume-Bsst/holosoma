@@ -10,8 +10,8 @@ import torch
 from holosoma.config_types.reward import RewardTermCfg
 from holosoma.managers.command.terms.wbt import MotionCommand
 from holosoma.managers.reward.base import RewardTermBase
-from holosoma.utils.rotations import quat_error_magnitude
 from holosoma.utils.contact_targets import beta_weighted_position_reward
+from holosoma.utils.rotations import quat_error_magnitude
 
 if TYPE_CHECKING:
     from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
