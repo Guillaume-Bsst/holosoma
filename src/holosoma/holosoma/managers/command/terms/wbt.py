@@ -888,7 +888,7 @@ class MotionCommand(CommandTermBase):
         else:
             phase = torch.rand(env_ids.numel(), device=self.device)
 
-        if self._env.is_evaluating:
+        if self._env.is_evaluating and self.motion_cfg.eval_start_at_zero:
             phase = torch.zeros_like(phase)
 
         # For multi-motion: randomly assign each env to a motion, sample within that motion's range
