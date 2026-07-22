@@ -410,12 +410,13 @@ class MuJoCo(BaseSimulator):
             pos, quat, half_extent, mass = resolve_box_spawn(sim_cfg, self.robot_config)
             self.scene_manager.add_free_box(pos, half_extent, mass, quat=quat)
 
-        # Optional static support table (SimEngineConfig.add_support): the surface the clip places
-        # the box on, anchored relative to the robot like the free box. Usual floor stays.
+        # Optional static support table (SimEngineConfig.add_support): the REAL table mesh the
+        # clip places the box on, anchored relative to the robot like the free box. Usual floor stays.
         if getattr(sim_cfg, "add_support", False):
             support = resolve_support_spawn(sim_cfg, self.robot_config)
             if support is not None:
-                self.scene_manager.add_static_box("support_table", support[0], support[1], support[2])
+                vertices, faces, pos, quat = support
+                self.scene_manager.add_static_mesh("support_table", vertices, faces, pos, quat)
 
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.

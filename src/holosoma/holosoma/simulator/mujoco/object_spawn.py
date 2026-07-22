@@ -151,45 +151,49 @@ def _reanchor_yawxy(
 
 def resolve_support_spawn(
     sim_cfg: SimEngineConfig, robot_config: RobotConfig
-) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    """Resolve (pos[3], quat_wxyz[4], half_extents[3]) for the static support table, or None.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """Resolve (vertices[N,3], faces[M,3], pos[3], quat_wxyz[4]) for the support table, or None.
 
-    Implements SimEngineConfig.add_support: reads the support mesh (clip-world coordinates, e.g.
-    femto14_support_world.obj), takes its axis-aligned bounding box, and re-anchors it relative to
-    the robot's init pose with the same yaw+XY mapping as the free box -- so the table appears at
-    its usual spot RELATIVE to the robot without touching the floor, the robot spawn, or the yaw.
-    Collision-wise a box geom is exact (unlike a non-convex mesh, which MuJoCo would collide as
-    its convex hull -- the failure mode that pushed the robot around when the whole terrain mesh
-    was loaded).
+    Implements SimEngineConfig.add_support: loads the REAL support mesh (clip-world coordinates,
+    e.g. femto14_support_world.obj -- rotated plateau + legs, triangulated) and computes the rigid
+    transform that re-anchors the whole clip world relative to the robot's init pose (same yaw+XY
+    mapping as the free box, heights untouched). The caller attaches the mesh under a body at that
+    transform, so the table keeps its exact shape and orientation -- an AABB box approximation is
+    wrong here because the table is rotated ~-105 deg in the clip world.
     """
     if not (sim_cfg.add_support and sim_cfg.support_obj_file and sim_cfg.object_motion_file):
         return None
 
     mesh_path = resolve_data_file_path(sim_cfg.support_obj_file)
-    verts = []
+    verts: list[list[float]] = []
+    faces: list[list[int]] = []
     with open(mesh_path) as f:
         for line in f:
             if line.startswith("v "):
                 verts.append([float(x) for x in line.split()[1:4]])
-    v = np.asarray(verts, dtype=np.float64)
-    lo, hi = v.min(axis=0), v.max(axis=0)
-    center_clip = (lo + hi) / 2.0
-    half_extents = (hi - lo) / 2.0
+            elif line.startswith("f "):
+                idx = [int(tok.split("/")[0]) - 1 for tok in line.split()[1:]]
+                # fan-triangulate just in case (trimesh exports are already triangles)
+                faces.extend([idx[0], idx[i], idx[i + 1]] for i in range(1, len(idx) - 1))
+    vertices = np.asarray(verts, dtype=np.float32)
+    faces_arr = np.asarray(faces, dtype=np.int32)
 
+    # Rigid transform mapping clip-world coordinates into this scene (yaw+XY anchoring):
+    # world_pt = t + Rz(dyaw) @ clip_pt, derived from mapping the clip root onto the robot init.
     data = np.load(resolve_data_file_path(sim_cfg.object_motion_file))
-    t = int(np.clip(sim_cfg.object_motion_start_timestep, 0, data["joint_pos"].shape[0] - 1))
-    pos, quat = _reanchor_yawxy(
-        center_clip,
+    t_idx = int(np.clip(sim_cfg.object_motion_start_timestep, 0, data["joint_pos"].shape[0] - 1))
+    origin, quat = _reanchor_yawxy(
+        np.zeros(3),
         np.array([1.0, 0.0, 0.0, 0.0]),
-        data["joint_pos"][t, :7],
+        data["joint_pos"][t_idx, :7],
         robot_config.init_state.pos,
         robot_config.init_state.rot,
     )
     logger.info(
-        f"Support table anchored from '{sim_cfg.support_obj_file}': pos={pos.round(3).tolist()}, "
-        f"half_extents={half_extents.round(3).tolist()}"
+        f"Support table mesh '{sim_cfg.support_obj_file}': {len(vertices)} verts, "
+        f"{len(faces_arr)} tris, scene transform pos={origin.round(3).tolist()}"
     )
-    return pos, quat, half_extents
+    return vertices, faces_arr, origin, quat
 
 
 def robot_init_state_from_clip(sim_cfg: SimEngineConfig, robot_config: RobotConfig) -> RobotConfig | None:

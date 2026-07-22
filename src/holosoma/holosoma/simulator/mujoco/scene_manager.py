@@ -386,25 +386,31 @@ class MujocoSceneManager:
         )
         logger.info(f"Spawned free box at {list(pos)} (half_extent={half_extent} m, mass={mass} kg)")
 
-    def add_static_box(self, name: str, pos, quat, half_extents) -> None:
-        """Add a STATIC box (no joint) -- e.g. the clip's support table for object-carry sim2sim.
+    def add_static_mesh(self, name: str, vertices, faces, pos, quat) -> None:
+        """Add a STATIC mesh body -- e.g. the clip's real support table for object-carry sim2sim.
 
-        Environment collision class (contype=2, conaffinity=1) like the terrain, so it collides
-        with both the robot and the free box. An exact box geom is used instead of the support
-        mesh because MuJoCo collides meshes as convex hulls (a non-convex mesh would produce
-        phantom collisions).
+        The true mesh is rendered (real shape/orientation); collision uses MuJoCo's convex hull
+        of the mesh, which for a table = the solid table block (top surface exact -- what the box
+        lands on). Environment collision class (contype=2, conaffinity=1) like the terrain, so it
+        collides with both the robot and the free box. NOTE: never merge such a mesh with the
+        floor -- hulling a non-convex floor+table produces phantom ramp collisions.
         """
+        mesh_spec = self.world_spec.add_mesh(name=f"{name}_mesh")
+        mesh_spec.uservert = vertices.flatten(order="C")
+        mesh_spec.userface = faces.flatten(order="C")
+        mesh_spec.smoothnormal = False
+
         body = self.world_spec.worldbody.add_body(name=name, pos=list(pos), quat=list(quat))
         geom = body.add_geom(
             name=f"{name}_geom",
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=list(half_extents),
+            type=mujoco.mjtGeom.mjGEOM_MESH,
+            meshname=mesh_spec.name,
             rgba=[0.55, 0.42, 0.28, 1.0],
             friction=[0.9, 0.01, 0.001],
         )
         geom.contype = 2
         geom.conaffinity = 1
-        logger.info(f"Added static box '{name}' at {list(pos)} (half_extents={list(half_extents)})")
+        logger.info(f"Added static mesh '{name}' ({len(vertices)} verts) at {list(pos)}")
 
     def _apply_collision_settings(self, robot_spec: mujoco.MjSpec, robot_config: RobotConfig) -> None:
         """Apply collision settings based on unified self_collisions configuration.
