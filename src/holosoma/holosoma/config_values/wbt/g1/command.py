@@ -2,7 +2,13 @@
 
 from dataclasses import replace
 
-from holosoma.config_types.command import CommandManagerCfg, CommandTermCfg, MotionConfig, NoiseToInitialPoseConfig
+from holosoma.config_types.command import (
+    CommandManagerCfg,
+    CommandTermCfg,
+    GraspSettleConfig,
+    MotionConfig,
+    NoiseToInitialPoseConfig,
+)
 
 init_pose_config = NoiseToInitialPoseConfig(
     overall_noise_scale=1.0,
@@ -46,9 +52,30 @@ motion_config = MotionConfig(
     noise_to_initial_pose=init_pose_config,
 )
 
+# Object clip: enable grasp-consistent init + settling so mid-clip contact resets don't eject/drop
+# the box. A+B here (contact-consistent placement + freeze + termination grace); weld is left off and
+# can be toggled for the hardest clips (or exercised via probe_grasp_settle.py).
+grasp_settle_config = GraspSettleConfig(
+    enable=True,
+    contact_distance_threshold=0.35,  # wrist<->box ~0.21-0.28m when carried, ~0.5-0.8m when free
+    settle_steps=12,  # ~0.24s at 50Hz
+    settle_robot_noise_scale=0.0,  # contact resets spawn exactly at the reference pose
+    freeze_clip_during_settle=True,
+    disable_termination_during_settle=True,
+    weld_object_during_settle=False,
+    # Training-wheels curriculum: episodes start fully assisted (object kinematically carried at
+    # the reference grasp during contact frames) and the assist probability anneals linearly to 0
+    # over the first ~400k env steps (~55% of a 30k-iteration PPO run), so the FINAL policy holds
+    # the object fully physically while early training always gets a holdable box.
+    weld_contact_prob_start=1.0,
+    weld_contact_prob_end=0.0,
+    weld_anneal_steps=400_000,
+)
+
 motion_config_w_object = replace(
     motion_config,
     motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz",
+    grasp_settle=grasp_settle_config,
 )
 
 g1_29dof_wbt_command = CommandManagerCfg(
@@ -93,6 +120,7 @@ motion_config_27dof = motion_config
 motion_config_27dof_w_object = replace(
     motion_config_27dof,
     motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/sub3_largebox_003_mj_w_obj.npz",
+    grasp_settle=grasp_settle_config,
 )
 
 g1_27dof_wbt_command = replace(

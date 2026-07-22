@@ -118,6 +118,24 @@ class TaskConfig:
     motion_end_timestep: int | None = None
     """Ending timestep for motion clip playback. If None, plays until the end."""
 
+    object_motion_file: str | None = None
+    """Path to the training motion NPZ (with object_pos_w/object_quat_w) for object-carry policies.
+    Required by g1-29dof-wbt-w-object: the actor obs includes the box pose relative to the reference
+    root (obj_pos_b + obj_ori_b, 9 dims). Since the box tracks the reference during contact
+    (kinematic), that relative transform is derived directly from this clip, indexed by the motion
+    timestep -- no external box-pose channel needed for sim-to-sim. For real deployment this is where
+    a live mocap/RGB-D box pose would be substituted."""
+
+    motion_prepend_timesteps: int = 0
+    """Number of default-pose prepend frames the trained motion has ahead of the clip (matches the
+    training MotionConfig default_pose_prepend). The object-obs lookup pads the clip's object/root
+    trajectory by this many frames (holding frame 0) so the timestep indexing aligns with the ONNX."""
+
+    zero_object_obs: bool = False
+    """Debug: feed zeros for obj_pos_b/obj_ori_b instead of the clip lookup. Isolation test -- if the
+    robot stands with this on but falls with it off, the object obs (frame/convention) is the culprit;
+    if it falls either way, the object obs is not the cause (look at gains/URDF/general sim2sim gap)."""
+
     debug: DebugConfig = DebugConfig()
     """Debug overrides for quick testing."""
 

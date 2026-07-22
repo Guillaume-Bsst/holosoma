@@ -75,6 +75,18 @@ class BadTracking(TerminationTermBase):
             bad_object_ori = self.bad_object_ori(motion_command)
             bad_tracking |= bad_object_pos | bad_object_ori
 
+        # grasp-settle grace period: while a contact reset is still settling, suppress tracking
+        # termination so the hand<->object contact can equilibrate without killing the episode.
+        settle_cfg = getattr(motion_command, "grasp_settle_cfg", None)
+        settle_counter = getattr(motion_command, "settle_counter", None)
+        if (
+            settle_cfg is not None
+            and settle_cfg.disable_termination_during_settle
+            and settle_counter is not None
+            and motion_command._settle_enabled()
+        ):
+            bad_tracking = bad_tracking & (settle_counter == 0)
+
         return bad_tracking
 
     def bad_ref_pos(self, motion_command: MotionCommand) -> torch.Tensor:
