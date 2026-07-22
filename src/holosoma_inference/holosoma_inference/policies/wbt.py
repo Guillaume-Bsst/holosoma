@@ -132,20 +132,27 @@ class WholeBodyTrackingPolicy(BasePolicy):
     def _load_object_motion(self, npz_path: str, prepend: int) -> None:
         """Precompute obj_pos_b (3) + obj_ori_b (6D) per motion frame from the training clip.
 
-        obj_pos_b/obj_ori_b are the box pose expressed in the reference-root frame. Both the box and
-        the root come from the same clip, so the transform is clip-internal (independent of where the
-        robot actually is in the world) and matches exactly what the policy saw in training whenever
-        the box tracked the reference (contact frames -- kinematic -- and rest). We hold frame 0 for
-        the `prepend` default-pose frames so the index lines up with the ONNX motion timestep.
+        obj_pos_b/obj_ori_b are the box pose expressed in the REF-BODY frame -- torso_link, matching
+        training's obj_pos_b/obj_ori_b terms which use robot_ref_pos_w/robot_ref_quat_w
+        (= motion_config.body_name_ref, the torso), NOT the pelvis root. Both the box and the torso
+        come from the same clip, so the transform is clip-internal (independent of where the robot
+        actually is in the world) and matches what the policy saw in training whenever the robot and
+        box tracked the reference (contact frames -- kinematic -- and rest). We hold frame 0 for the
+        `prepend` default-pose frames so the index lines up with the ONNX motion timestep.
         """
         data = np.load(npz_path)
         obj_pos = np.asarray(data["object_pos_w"], np.float32)  # (T, 3) world
         obj_quat = np.asarray(data["object_quat_w"], np.float32)  # (T, 4) wxyz
-        root = np.asarray(data["joint_pos"], np.float32)[:, :7]  # (T, 7) [pos(3), quat wxyz(4)]
-        root_pos, root_quat = root[:, :3], root[:, 3:7]
+        # Reference body = torso_link (training body_name_ref), taken from the clip's body tracks.
+        # Using the pelvis root here instead is ~5 cm off at stand but up to ~0.45 m / a large
+        # rotation off mid-clip when the reference leans to pick the box.
+        body_names = [str(n) for n in data["body_names"]]
+        ref_idx = body_names.index("torso_link")
+        root_pos = np.asarray(data["body_pos_w"], np.float32)[:, ref_idx]  # (T, 3)
+        root_quat = np.asarray(data["body_quat_w"], np.float32)[:, ref_idx]  # (T, 4) wxyz
 
-        # box pose in the reference-root frame (inference math utils, all wxyz -- same geometry as the
-        # training obj_pos_b/obj_ori_b, which used the xyzw sim convention).
+        # box pose in the reference torso frame (inference math utils, all wxyz -- same geometry as
+        # the training obj_pos_b/obj_ori_b, which used the xyzw sim convention).
         rel_pos = quat_rotate_inverse(root_quat, obj_pos - root_pos)  # (T, 3)
         rel_quat = subtract_frame_transforms(root_quat, obj_quat)  # (T, 4) wxyz
         rel_mat = matrix_from_quat(rel_quat)  # (T, 3, 3)

@@ -87,7 +87,10 @@ def quat_mul(a, b):
     y = qq - yy + (w1 - x1) * (y2 + z2)
     z = qq - zz + (z1 + y1) * (w2 - x2)
 
-    return np.stack([w, x, y, z]).reshape(a.shape)
+    # axis=-1 so each row is one quaternion. The previous bare np.stack stacked along axis 0
+    # -> shape (4, N); the reshape to (N, 4) then INTERLEAVED components across the batch,
+    # silently scrambling every result for N > 1 (single-quat calls were unaffected).
+    return np.stack([w, x, y, z], axis=-1).reshape(a.shape)
 
 
 def quat_apply(a, b):  # a: (1, 4), b: (1, 3)
