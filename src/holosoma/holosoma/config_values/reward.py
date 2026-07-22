@@ -23,6 +23,8 @@ DEFAULTS = {
     "g1_27dof_wbt": g1_29dof_wbt_reward,
     "g1_29dof_wbt_w_object": g1_29dof_wbt_reward_w_object,
     "g1_27dof_wbt_w_object": g1_29dof_wbt_reward_w_object,
+    "g1_29dof_wbt_w_object_actor": g1_29dof_wbt_reward_w_object_actor,
+    "g1_27dof_wbt_w_object_actor": g1_29dof_wbt_reward_w_object,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac_reward,
     "g1_27dof_wbt_fast_sac": g1_29dof_wbt_fast_sac_reward,
 }

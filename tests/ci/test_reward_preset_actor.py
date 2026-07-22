@@ -13,7 +13,9 @@ def test_actor_preset_has_cd_term_small_weight():
     actor = reward.g1_29dof_wbt_reward_w_object_actor
     assert TERM in actor.terms
     t = actor.terms[TERM]
-    assert 0.0 < t.weight <= 0.5  # raffineur : petit poids
+    assert t.weight == 0.3
+    assert t.params["sigma"] == 0.3
+    assert t.func == "holosoma.managers.reward.terms.wbt:motion_relative_hand_object_position_error_exp"
     # base left intact inside the actor preset
     assert "motion_relative_body_position_error_exp" in actor.terms
 
