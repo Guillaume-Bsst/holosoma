@@ -212,6 +212,7 @@ def preprocess_motion_data(
     scale=0.714,
     mat_height=0.1,
     object_poses=None,
+    object_scale=None,
 ):
     """
     Preprocess human joints and object poses for retargeting.
@@ -240,10 +241,15 @@ def preprocess_motion_data(
     # Scale human joints
     human_joints = human_joints * scale
 
+    # object_scale: separate factor for the object trajectory -- the native_scene
+    # steelman passes 1.0 (scene untouched); None keeps the released behavior
+    # (trajectory follows the human alpha).
+    if object_scale is None:
+        object_scale = scale
     if object_poses is not None:
-        object_poses[:, -3:-1] = object_poses[:, -3:-1] * scale
+        object_poses[:, -3:-1] = object_poses[:, -3:-1] * object_scale
         object_z0 = object_poses[0, -1]
-        dz_scale = (object_poses[:, -1] - object_z0) * scale
+        dz_scale = (object_poses[:, -1] - object_z0) * object_scale
         object_poses[:, -1] = object_z0 + dz_scale
 
         object_moving_frame_idx = extract_object_first_moving_frame(object_poses)
