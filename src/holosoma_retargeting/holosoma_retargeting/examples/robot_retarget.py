@@ -691,9 +691,17 @@ def main(cfg: RetargetingConfig) -> None:
     logger.info("Retargeter created")
 
     # Preprocess motion data
+    object_poses_native = None
     if task_type == "robot_only":
         human_joints = preprocess_motion_data(human_joints, retargeter, toe_names, smpl_scale)
     elif task_type in {"object_interaction", "climbing"}:
+        # native_scene steelman: keep a native copy of the trajectory before the
+        # alpha -- it becomes the robot-side (augmented) trajectory below, while
+        # the demo side keeps the released scaling (coherent with the scaled
+        # human reference in the source Laplacian).
+        object_poses_native = (object_poses.copy()
+                               if cfg.task_config.native_scene and object_poses is not None
+                               else None)
         human_joints, object_poses, object_moving_frame_idx = preprocess_motion_data(
             human_joints,
             retargeter,
@@ -716,6 +724,12 @@ def main(cfg: RetargetingConfig) -> None:
         task_name,
         augmentation_translation=_AUGMENTATION_TRANSLATION,
     )
+
+    # native_scene steelman: the robot-side trajectory is the REAL one (untouched by
+    # the alpha) -- same injection point as the released augmentation feature; q_init
+    # and the demo side keep the released flow.
+    if object_poses_native is not None and task_type == "object_interaction":
+        object_poses_augmented = convert_object_poses_to_mujoco_order(object_poses_native)
 
     # Extract foot sticking sequences
     foot_sticking_sequences = extract_foot_sticking_sequence_velocity(human_joints, retargeter.demo_joints, toe_names)

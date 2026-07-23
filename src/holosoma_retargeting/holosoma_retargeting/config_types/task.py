@@ -26,6 +26,14 @@ class TaskConfig:
     # this concatenation pattern for static boxes).
     with_ground: bool = False
 
+    # Steelman ablation of the coupled alpha (object_interaction): keep the OBJECT
+    # TRAJECTORY at its native scale -- the released robot-side mesh points and the
+    # MJCF object geometry are already native-size, only the trajectory (and the
+    # demo side) get the alpha. The human reference still gets the morphology
+    # scaling: this decouples reference adaptation from scene deformation, which
+    # the released single alpha ties together.
+    native_scene: bool = False
+
     # Ground meshgrid (robot_only task)
     ground_size: int = 15
     ground_range: tuple[float, float] = (-1.0, 1.0)
