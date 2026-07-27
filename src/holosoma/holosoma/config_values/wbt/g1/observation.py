@@ -58,6 +58,19 @@ actor_obs_w_object = ObsGroupCfg(
             scale=1.0,
             noise=0.05,
         ),
+        # Table (static support): the robot SEES it, so it can place itself correctly (drop-off)
+        # and not barge into it. Pose relative to the torso, with the same perception noise as the
+        # box.
+        "support_pos_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_pos_b",
+            scale=1.0,
+            noise=0.02,
+        ),
+        "support_ori_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_ori_b",
+            scale=1.0,
+            noise=0.05,
+        ),
     },
 )
 
@@ -129,6 +142,16 @@ critic_obs_w_object_terms.update(
         ),
         "obj_lin_vel_b": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:obj_lin_vel_b",
+            scale=1.0,
+            noise=0.0,
+        ),
+        "support_pos_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_pos_b",
+            scale=1.0,
+            noise=0.0,
+        ),
+        "support_ori_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_ori_b",
             scale=1.0,
             noise=0.0,
         ),

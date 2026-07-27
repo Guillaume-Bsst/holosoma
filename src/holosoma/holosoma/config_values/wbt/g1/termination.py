@@ -40,7 +40,11 @@ g1_29dof_wbt_termination = TerminationManagerCfg(
                 ],
                 # object tracking
                 # only triggered when has_object=True
-                "bad_object_pos_threshold": 0.25,
+                # Tightened 0.25 -> 0.15: tracking success is at 0.10 m, so 0.25 left a 15 cm dead
+                # band where the box drifts without killing the episode and without any pressure to
+                # get back under 10 cm. 0.15 removes most of that band (5 cm margin over the success
+                # radius, so we do not kill on noise / contact transients).
+                "bad_object_pos_threshold": 0.15,
                 "bad_object_ori_threshold": 0.8,
             },
         ),

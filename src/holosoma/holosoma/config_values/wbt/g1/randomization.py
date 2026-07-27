@@ -39,7 +39,12 @@ object_state_dr_at_setup = {
     "randomize_object_rigid_body_mass_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_mass_startup",
         params={
-            "mass_distribution_params": [1.0, 4.0],
+            # ADD to the 0.811 kg URDF base -> 0.81-1.21 kg (mean ~1.0); the real box36 weighs
+            # ~1 kg. The old [1.0, 4.0] => 1.8-4.8 kg: an UNREALISTIC heavy tail whose residual
+            # weight (1-alpha)*m*g exceeded the grip capacity -> heavy boxes drifted into the
+            # [0.10, 0.25] m dead band (survival OK, tracking KO), pinning obj_track_success at
+            # ~0.83, below the 0.85 gate -> frozen alpha curriculum. Cf. run vcbkx2mm.
+            "mass_distribution_params": [0.0, 0.4],
         },
     ),
     "randomize_object_rigid_body_inertia_startup": RandomizationTermCfg(

@@ -154,7 +154,9 @@ def object_grasp_relative_error_exp(env: WholeBodyTrackingManager, sigma: float)
 
     error = torch.sum(torch.square(rel_sim - rel_ref), dim=-1)
     reward = torch.exp(-error / sigma**2)
-    return torch.where(ref_contact, reward, torch.ones_like(reward))
+    # 0 (not 1.0) off-contact -- see object_flat_contact_quality_exp: paying these contact rewards
+    # off-contact rewards the easy pre-contact phase and builds a "die before contact" local optimum.
+    return torch.where(ref_contact, reward, torch.zeros_like(reward))
 
 
 def object_surface_contact_error_exp(
@@ -196,7 +198,8 @@ def object_surface_contact_error_exp(
     reward_dist = torch.exp(-torch.square(d_ref - d_current) / sigma_dist**2)
 
     reward = reward_geo * reward_dist
-    return torch.where(ref_contact, reward, torch.ones_like(reward))
+    # 0 (not 1.0) off-contact -- see object_flat_contact_quality_exp (attractor removal).
+    return torch.where(ref_contact, reward, torch.zeros_like(reward))
 
 
 def object_flat_contact_quality_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
@@ -224,9 +227,18 @@ def object_flat_contact_quality_exp(env: WholeBodyTrackingManager, sigma: float)
 
     offsets = torch.tensor(mc.grasp_settle_cfg.flat_contact_offsets, device=env.device, dtype=a_pos.dtype)  # (K,3)
     n, k = env.num_envs, offsets.shape[0]
+    # chiral hands (rubber): the right palm is the y-mirror of the left -> per-anchor offsets.
+    # None (half-sphere) = same offsets for both anchors, unchanged behaviour.
+    offsets_r_cfg = mc.grasp_settle_cfg.flat_contact_offsets_right
+    if offsets_r_cfg is not None:
+        offsets_r = torch.tensor(offsets_r_cfg, device=env.device, dtype=a_pos.dtype)  # (K,3)
+        both = torch.stack([offsets, offsets_r], dim=0)  # (2,K,3)
+        off_env = both[anchor_idx.clamp(0, 1)]  # (N,K,3) per-env selection by contact anchor
+    else:
+        off_env = offsets.unsqueeze(0).expand(n, k, 3)
     # world keypoints: a_pos + R(a_quat) @ offset, per keypoint
     a_quat_k = a_quat.unsqueeze(1).expand(n, k, 4).reshape(n * k, 4)
-    off_k = offsets.unsqueeze(0).expand(n, k, 3).reshape(n * k, 3)
+    off_k = off_env.reshape(n * k, 3)
     pts_w = a_pos.unsqueeze(1) + quat_apply(a_quat_k, off_k, w_last=True).reshape(n, k, 3)  # (N,K,3)
 
     box_pos = mc.simulator_object_pos_w.unsqueeze(1)  # (N,1,3)
@@ -237,7 +249,56 @@ def object_flat_contact_quality_exp(env: WholeBodyTrackingManager, sigma: float)
     signed_dist, _ = box_nearest_and_signed_distance(pts_local, half)  # (N,K)
     err = torch.mean(torch.square(signed_dist), dim=-1)  # (N,)
     reward = torch.exp(-err / sigma**2)
-    return torch.where(ref_contact, reward, torch.ones_like(reward))
+    # 0 (not 1.0) off-contact: this is an ADDITIVE reward (weight 1.0), so returning 1.0 whenever the
+    # reference isn't in contact pays a constant survival bonus for the (easy) pre-contact phase, which
+    # competes with the (harder) carry phase -> a "die before contact" local optimum the policy gets
+    # stuck in with high run-to-run variance. A contact-QUALITY bonus should simply be 0 when there is
+    # no contact to grade.
+    return torch.where(ref_contact, reward, torch.zeros_like(reward))
+
+
+def support_surface_contact_error_exp(
+    env: WholeBodyTrackingManager, sigma_geodesic: float, sigma_dist: float
+) -> torch.Tensor:
+    """robot<->TABLE: SYMMETRIC counterpart of ``object_surface_contact_error_exp``, but for the
+    STATIC support object (the table). On the frames where the REFERENCE approaches the table (hand
+    close by, ``support_ref_contact`` baked by add_support_contact.py), it rewards the current hand
+    for being at the right spot on the table SURFACE (reference witness
+    ``support_ref_witness_local`` + depth ``support_ref_contact_dist``), through the same box SDF
+    (table mesh half-extents ``support_half_extents``) and the surface geodesic.
+
+    Goal (user request): the robot KNOWS where the table is, approaches it / places itself on it
+    properly, and does not barge into it -- instead of treating it as ground. Neutral (0) outside
+    the reference-contact frames, or if the clip carries no table (off-contact attractor removed,
+    cf. object_flat_contact_quality_exp). Since the table is static and pinned at its clip pose, its
+    current world pose == its reference pose (mc.support_pos_w/quat_w).
+    """
+    from holosoma.utils.box_geometry import box_nearest_and_signed_distance, box_surface_geodesic_distance
+    from holosoma.utils.grasp_settle import gather_anchor
+    from holosoma.utils.rotations import quat_rotate_inverse
+
+    mc = _get_motion_command_and_assert_type(env)
+    if mc._anchor_body_indexes is None or not getattr(mc.motion, "has_support_contact", False):
+        return torch.zeros(env.num_envs, device=env.device)
+
+    ts = mc.time_steps
+    ref_contact = mc.motion.support_ref_contact[ts]  # (N,)
+    anchor_idx = mc.motion.support_ref_anchor_idx[ts]  # (N,) 0=left,1=right
+    w_ref = mc.motion.support_ref_witness_local[ts]  # (N,3) table-local
+    d_ref = mc.motion.support_ref_contact_dist[ts]  # (N,)
+
+    a_pos_sim, _ = gather_anchor(mc.robot_anchor_pos_w, mc.robot_anchor_quat_w, anchor_idx)
+    tab_pos, tab_quat = mc.support_pos_w, mc.support_quat_w  # static, pinned
+    p_local = quat_rotate_inverse(tab_quat, a_pos_sim - tab_pos, w_last=True)
+
+    half = mc.motion.support_half_extents.to(p_local.dtype)
+    d_current, w_current = box_nearest_and_signed_distance(p_local, half)
+
+    geo = box_surface_geodesic_distance(w_ref, w_current, half)
+    reward = torch.exp(-torch.square(geo) / sigma_geodesic**2) * torch.exp(
+        -torch.square(d_ref - d_current) / sigma_dist**2
+    )
+    return torch.where(ref_contact, reward, torch.zeros_like(reward))
 
 
 # ================================================================================================
