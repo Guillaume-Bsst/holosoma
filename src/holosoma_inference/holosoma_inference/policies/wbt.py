@@ -63,6 +63,11 @@ class WholeBodyTrackingPolicy(BasePolicy):
         # transform is derived from the clip itself and indexed by the motion timestep.
         self._obj_pos_b_traj = None
         self._obj_ori_b_traj = None
+        # Static support table (e.g. the drop-off table): position/orientation relative to the
+        # moving torso frame, same clip-derived math as obj_pos_b/obj_ori_b -- only populated when
+        # the clip carries support_pos_w/support_quat_w (see wbt_w_object_support obs preset).
+        self._support_pos_b_traj = None
+        self._support_ori_b_traj = None
         if getattr(config.task, "object_motion_file", None):
             self._load_object_motion(config.task.object_motion_file, config.task.motion_prepend_timesteps)
 
@@ -95,6 +100,15 @@ class WholeBodyTrackingPolicy(BasePolicy):
             logger.warning(
                 "object_motion_file was provided but this obs config has no obj_pos_b/obj_ori_b terms "
                 "(non-object policy); the object motion will be ignored."
+            )
+
+        wants_support = "support_pos_b" in actor_terms
+        if wants_support and self._support_pos_b_traj is None:
+            raise ValueError(
+                "Inference config expects support-table observations (support_pos_b/support_ori_b) "
+                "but the clip passed via --task.object-motion-file has no support_pos_w/support_quat_w "
+                "fields. Use a clip that was exported with the static support table, or use "
+                "inference:g1-29dof-wbt-w-object (no support terms) instead."
             )
 
         # Load stiff startup parameters from robot config
@@ -180,6 +194,31 @@ class WholeBodyTrackingPolicy(BasePolicy):
             f"Loaded object motion from {npz_path}: {self._obj_pos_b_traj.shape[0]} frames "
             f"(prepend={prepend}) -> obj_pos_b(3)+obj_ori_b(6) available in actor obs."
         )
+
+        # Static support table (optional): support_pos_w/support_quat_w are a single world pose
+        # (not per-frame), broadcast across T then expressed in the same moving torso frame as
+        # obj_pos_b/obj_ori_b above -- matches training's support_pos_b/support_ori_b terms.
+        if "support_pos_w" in data:
+            support_pos = np.broadcast_to(np.asarray(data["support_pos_w"], np.float32), obj_pos.shape)
+            support_quat = np.broadcast_to(np.asarray(data["support_quat_w"], np.float32), obj_quat.shape)
+
+            support_rel_pos = quat_rotate_inverse(root_quat, support_pos - root_pos)  # (T, 3)
+            support_rel_quat = subtract_frame_transforms(root_quat, support_quat)  # (T, 4) wxyz
+            support_rel_mat = matrix_from_quat(support_rel_quat)  # (T, 3, 3)
+            support_ori6 = support_rel_mat[..., :2].reshape(support_rel_mat.shape[0], -1)  # (T, 6)
+
+            if prepend > 0:
+                support_rel_pos = np.concatenate(
+                    [np.repeat(support_rel_pos[:1], prepend, axis=0), support_rel_pos], axis=0
+                )
+                support_ori6 = np.concatenate([np.repeat(support_ori6[:1], prepend, axis=0), support_ori6], axis=0)
+
+            self._support_pos_b_traj = support_rel_pos.astype(np.float32)
+            self._support_ori_b_traj = support_ori6.astype(np.float32)
+            logger.info(
+                f"Loaded support table pose from {npz_path} -> support_pos_b(3)+support_ori_b(6) "
+                "available in actor obs."
+            )
 
     def _get_ref_body_orientation_in_world(self, robot_state_data):
         # Create configuration for pinocchio robot
@@ -366,6 +405,14 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 logger.warning("live_object_obs: no box pose received yet and no clip fallback; sending zeros")
                 current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
                 current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
+
+        # support_pos_b / support_ori_b (support-table-aware policies only, see
+        # wbt_w_object_support obs preset). The table is static in world frame, so unlike the box
+        # there's no live/closed-loop source needed -- clip lookup at the current timestep suffices.
+        if self._support_pos_b_traj is not None:
+            idx = int(np.clip(int(round(self.curr_motion_timestep)), 0, self._support_pos_b_traj.shape[0] - 1))
+            current_obs_buffer_dict["support_pos_b"] = self._support_pos_b_traj[idx : idx + 1]
+            current_obs_buffer_dict["support_ori_b"] = self._support_ori_b_traj[idx : idx + 1]
 
         return current_obs_buffer_dict
 

@@ -58,6 +58,18 @@ actor_obs_w_object = ObsGroupCfg(
             scale=1.0,
             noise=0.05,
         ),
+        # Table (support statique) : le robot la VOIT pour se placer correctement (dépôt) et ne pas
+        # foncer dedans. Pose relative au torse, avec le même bruit de perception que la box.
+        "support_pos_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_pos_b",
+            scale=1.0,
+            noise=0.02,
+        ),
+        "support_ori_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_ori_b",
+            scale=1.0,
+            noise=0.05,
+        ),
     },
 )
 
@@ -129,6 +141,16 @@ critic_obs_w_object_terms.update(
         ),
         "obj_lin_vel_b": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:obj_lin_vel_b",
+            scale=1.0,
+            noise=0.0,
+        ),
+        "support_pos_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_pos_b",
+            scale=1.0,
+            noise=0.0,
+        ),
+        "support_ori_b": ObsTermCfg(
+            func="holosoma.managers.observation.terms.wbt:support_ori_b",
             scale=1.0,
             noise=0.0,
         ),

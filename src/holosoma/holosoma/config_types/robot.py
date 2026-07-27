@@ -75,6 +75,11 @@ class RobotForceControlConfig:
 class ObjectConfig:
     object_urdf_path: str | None = None
 
+    support_urdf_path: str | None = None
+    """Static support (table) URDF. Spawned fixed-base once per env; its root pose is written from
+    the clip's support_pos_w / support_quat_w at reset. The surface the box is deposited on -- real
+    collision + SDF, replacing the terrain-baked table. None = no support object (floor-only clip)."""
+
 
 @dataclass(frozen=True)
 class RobotConfig:

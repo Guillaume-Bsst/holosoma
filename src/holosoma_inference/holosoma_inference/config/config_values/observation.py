@@ -228,6 +228,61 @@ wbt_w_object = ObservationConfig(
     },
 )
 
+# Object-carry + static support table variant: same as `wbt_w_object` (163) plus the support
+# table's pose relative to the reference root (support_pos_b 3 + support_ori_b 6 = 9) -> 172.
+# Alphabetical assembly (see base.py obs_terms_sorted) places support_* after obj_*. Used by
+# g1-29dof-wbt-w-object-support; requires a clip NPZ with support_pos_w/support_quat_w (see
+# WholeBodyTrackingPolicy._load_object_motion).
+wbt_w_object_support = ObservationConfig(
+    obs_dict={
+        "actor_obs": [
+            "motion_command",
+            "motion_ref_ori_b",
+            "base_ang_vel",
+            "dof_pos",
+            "dof_vel",
+            "actions",
+            "obj_pos_b",
+            "obj_ori_b",
+            "support_pos_b",
+            "support_ori_b",
+        ]
+    },
+    obs_dims={
+        "motion_command": 58,
+        "motion_ref_pos_b": 3,
+        "motion_ref_ori_b": 6,
+        "base_lin_vel": 3,
+        "base_ang_vel": 3,
+        "dof_pos": 29,
+        "dof_vel": 29,
+        "actions": 29,
+        "obj_pos_b": 3,
+        "obj_ori_b": 6,
+        "support_pos_b": 3,
+        "support_ori_b": 6,
+    },
+    obs_scales={
+        "actions": 1.0,
+        "motion_command": 1.0,
+        "motion_ref_pos_b": 1.0,
+        "motion_ref_ori_b": 1.0,
+        "base_lin_vel": 1.0,
+        "base_ang_vel": 1.0,
+        "dof_pos": 1.0,
+        "dof_vel": 1.0,
+        "robot_body_pos_b": 1.0,
+        "robot_body_ori_b": 1.0,
+        "obj_pos_b": 1.0,
+        "obj_ori_b": 1.0,
+        "support_pos_b": 1.0,
+        "support_ori_b": 1.0,
+    },
+    history_length_dict={
+        "actor_obs": 1,
+    },
+)
+
 # =============================================================================
 # Default Configurations Dictionary
 # =============================================================================
