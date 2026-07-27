@@ -1,0 +1,35 @@
+<?xml version="1.0" ?>
+<robot name="support_table.urdf">
+  <!-- Static support surface (table) the clip places the box on. STATIC: spawned with a fixed
+       base at the clip pose (support_pos_w / support_quat_w from the training npz). Centered mesh
+       (femto14_support_box36.obj, ~0.9x0.6x0.756, origin at box centre) so the npz pose places it
+       exactly like the free box. Collision mesh = the plateau+legs for the box-on-table deposit
+       contact / SDF. -->
+  <link name="baseLink">
+    <inertial>
+      <mass value="50.0"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="1.0" ixy="0" ixz="0" iyy="1.0" iyz="0" izz="1.0"/>
+    </inertial>
+    <contact>
+      <lateral_friction value="0.9"/>
+      <stiffness value="30000"/>
+      <damping value="1000"/>
+    </contact>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="femto14_support_box36.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+      <material name="mat">
+        <color rgba="0.6 0.5 0.4 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="femto14_support_box36.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

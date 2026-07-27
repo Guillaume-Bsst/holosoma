@@ -1095,7 +1095,10 @@ g1_29dof_w_object = replace(
     g1_29dof,
     asset=replace(
         g1_29dof.asset,
-        urdf_file="g1/main_mesh_collision_halfspherehand.urdf",
+        # rubber hand = la vraie main du robot (et celle du XML MuJoCo sim2sim g1_29dof.xml :
+        # entraîner en half-sphere créait un mismatch de géométrie de contact train/test).
+        # flat_contact_offsets(_right) par défaut sont calibrés pour CETTE paume.
+        urdf_file="g1/main_mesh_collision_rubberhand.urdf",
     ),
     control=replace(
         g1_29dof.control,
@@ -1178,7 +1181,7 @@ g1_27dof_w_object = replace(
     g1_27dof,
     asset=replace(
         g1_27dof.asset,
-        urdf_file="g1/main_mesh_collision_halfspherehand.urdf",
+        urdf_file="g1/main_mesh_collision_rubberhand.urdf",  # cf. g1_29dof_w_object
     ),
     control=replace(
         g1_27dof.control,

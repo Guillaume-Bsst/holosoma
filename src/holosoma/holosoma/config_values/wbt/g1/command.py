@@ -63,11 +63,18 @@ grasp_settle_config = GraspSettleConfig(
     freeze_clip_during_settle=True,
     disable_termination_during_settle=True,
     weld_object_during_settle=False,
-    # Training-wheels curriculum: episodes start fully assisted (object kinematically carried at
-    # the reference grasp during contact frames) and the assist probability anneals linearly to 0
-    # over the first ~400k env steps (~55% of a 30k-iteration PPO run), so the FINAL policy holds
-    # the object fully physically while early training always gets a holdable box.
-    weld_contact_prob_start=1.0,
+    # Assist-weld curriculum ("training wheels"): DISABLED BY DEFAULT — it is a known-harmful
+    # mechanism, kept only so the probe harness can still exercise it explicitly.
+    # It welds the box to the SIM hand (lagging, jittery under an imperfect policy) with the
+    # velocity forced to ZERO, and it runs AFTER — so it OVERWRITES — the kinematic /
+    # force-mode assist. Measured cost when left at 1.0 (run mub6qh0i vs 2hizgun6, same clip,
+    # same hand, weld the only functional difference): the box sits ~8 cm off the reference at
+    # alpha=1 where the kinematic override should put it at ~0, the object tracking reward is
+    # cut to a third, and the success rate is essentially just the fraction of NON-welded
+    # episodes (succ ~= 1 - weld_assist_prob, r^2 = 0.94 over the anneal) — i.e. the "learning
+    # curve" was the anneal schedule, costing ~13k iterations.
+    # Superseded by kinematic_object_during_contact (welds to the SMOOTH REFERENCE instead).
+    weld_contact_prob_start=0.0,
     weld_contact_prob_end=0.0,
     weld_anneal_steps=400_000,
 )

@@ -1,0 +1,34 @@
+<?xml version="1.0" ?>
+<robot name="box36_light01.urdf">
+  <dynamics damping="0.5" friction="0.9"/>
+  <link name="baseLink">
+    <inertial>
+      <!-- sim2sim mass probe: 0.1 kg (real box is 811 g).
+           Solid-cube inertia I = m*a^2/6, a = 0.36 m -->
+      <mass value="0.1"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.00216" ixy="0" ixz="0" iyy="0.00216" iyz="0" izz="0.00216"/>
+    </inertial>
+    <contact>
+      <lateral_friction value="0.9"/>
+      <rolling_friction value="0.5"/>
+      <stiffness value="30000"/>
+      <damping value="1000"/>
+    </contact>
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="box36.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+       <material name="mat">
+        <color rgba="0.95 0.95 0.5 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="box36.obj" scale="1.0 1.0 1.0"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>
