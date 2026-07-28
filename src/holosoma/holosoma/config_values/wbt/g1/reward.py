@@ -132,6 +132,15 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
             params={"sigma": 0.03},
             weight=1.0,
         ),
+        # robot<->TABLE : même reward de contact de surface (witness + SDF) que pour la box, mais
+        # sur l'objet statique table. Apprend au robot à placer sa main au bon endroit près de la
+        # table (approche/dépôt) et à ne pas foncer dedans. Neutre si le clip ne porte pas de table.
+        # Poids plus faible que la box (signal secondaire de placement, pas la tâche principale).
+        "support_surface_contact_error_exp": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:support_surface_contact_error_exp",
+            params={"sigma_geodesic": 0.1, "sigma_dist": 0.05},
+            weight=0.5,
+        ),
     }
 )
 
