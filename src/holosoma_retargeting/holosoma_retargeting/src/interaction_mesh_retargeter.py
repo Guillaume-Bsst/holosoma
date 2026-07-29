@@ -63,6 +63,9 @@ class InteractionMeshRetargeter:
         debug: bool = False,
         w_nominal_tracking_init: float = 5.0,
         nominal_tracking_tau: float = 10.0,
+        object_variable: bool = False,
+        object_step_size: float = 0.05,
+        w_object_tracking: float = 0.0,
     ):
         """This kinematic retargeter solves the diffIK problem with hard constraints in SQP style.
         During each SQP iteration, the problem is solved with the following constraints and costs:
@@ -141,6 +144,26 @@ class InteractionMeshRetargeter:
         self.q_a_indices = np.arange(7 + self.q_a_init_idx, 7 + self.task_constants.ROBOT_DOF)
 
         self.nq_a = len(self.q_a_indices)
+
+        # objvar steelman: the object free joint (last 7 qpos) joins the decision
+        # variable; flag off keeps the released index set (bit-identical path).
+        self.object_variable = bool(object_variable)
+        self.object_step_size = float(object_step_size)
+        self.w_object_tracking = float(w_object_tracking)
+        if self.object_variable:
+            if not self.has_dynamic_object:
+                raise ValueError("object_variable requires a dynamic object in qpos")
+            free_joints = [j for j in range(self.robot_model.njnt)
+                           if self.robot_model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE]
+            assert len(free_joints) >= 2, "Expected two FREE joints (robot base + object)."
+            self.object_body_id = int(self.robot_model.jnt_bodyid[free_joints[1]])
+            self.object_qpos_indices = np.arange(self.nq - 7, self.nq)
+            self.q_opt_indices = np.concatenate([self.q_a_indices, self.object_qpos_indices])
+        else:
+            self.object_body_id = None
+            self.object_qpos_indices = None
+            self.q_opt_indices = self.q_a_indices
+        self.n_opt = len(self.q_opt_indices)
 
         # Create complete limits with floating base (-inf, inf) and actuated joint limits
         n_floating_base = 7

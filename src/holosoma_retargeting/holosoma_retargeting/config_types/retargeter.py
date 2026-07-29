@@ -90,3 +90,14 @@ class RetargeterConfig:
 
     nominal_tracking_tau: float = 1e6
     """Time constant for the nominal tracking cost."""
+
+    object_variable: bool = False
+    """Steelman extension: the object pose (free joint, last 7 qpos) joins the decision
+    variable of the per-frame QP. Off = released behavior, bit-identical."""
+
+    object_step_size: float = 0.05
+    """Trust region (SOC) for the object pose step per SQP iteration (objvar only)."""
+
+    w_object_tracking: float = 0.0
+    """Weak anchor of the object pose toward the input (augmented) trajectory, the
+    object analog of nominal tracking (objvar only). 0 = mesh-only."""

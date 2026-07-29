@@ -503,6 +503,9 @@ def build_retargeter_kwargs_from_config(
         "visualize": retargeter_config.visualize,
         "debug": retargeter_config.debug,
         "w_nominal_tracking_init": retargeter_config.w_nominal_tracking_init,
+        "object_variable": retargeter_config.object_variable,
+        "object_step_size": retargeter_config.object_step_size,
+        "w_object_tracking": retargeter_config.w_object_tracking,
     }
     if task_type == "climbing":
         kwargs["nominal_tracking_tau"] = retargeter_config.nominal_tracking_tau
