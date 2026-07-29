@@ -96,7 +96,9 @@ class RetargeterConfig:
     variable of the per-frame QP. Off = released behavior, bit-identical."""
 
     object_step_size: float = 0.05
-    """Trust region (SOC) for the object pose step per SQP iteration (objvar only)."""
+    """Trust region (SOC) for the object pose step per SQP iteration (objvar only). The
+    ball radius is applied to the concatenated [translation (m), quat (dimensionless)]
+    step, same mixed-units convention as the released robot `step_size` above."""
 
     w_object_tracking: float = 0.0
     """Weak anchor of the object pose toward the input (augmented) trajectory, the

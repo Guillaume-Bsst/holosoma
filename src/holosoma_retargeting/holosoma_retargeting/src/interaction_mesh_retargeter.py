@@ -830,7 +830,17 @@ class InteractionMeshRetargeter:
         # objvar: weak anchor pulling the object pose toward the input trajectory (q_locked),
         # the object analogue of nominal tracking; 0 = mesh only.
         if self.object_variable and self.w_object_tracking > 0:
-            z_o = dqo - (q_locked[-7:] - q_opt_n_last[self.nq_a :])
+            # Quaternion double cover: q and -q represent the same rotation, so nothing
+            # guarantees that q_locked (the per-frame frozen reference) and q_opt_n_last (the
+            # last accepted iterate) live in the same hemisphere -- a sign flip between the two
+            # would make the anchor target the antipodal representation and impose a physical
+            # flip on the object. We re-hemispherise the reference at every iteration by
+            # aligning it (dot product > 0) with the current quat before forming the additive
+            # residual.
+            obj_ref = q_locked[-7:].copy()
+            if np.dot(obj_ref[3:], q_opt_n_last[self.nq_a + 3 :]) < 0:
+                obj_ref[3:] = -obj_ref[3:]
+            z_o = dqo - (obj_ref - q_opt_n_last[self.nq_a :])
             obj_terms.append(self.w_object_tracking * cp.sum_squares(z_o))
 
         problem = cp.Problem(cp.Minimize(cp.sum(obj_terms)), constraints)
@@ -839,6 +849,9 @@ class InteractionMeshRetargeter:
         solver_kwargs = {"verbose": verbose}
         problem.solve(solver=cp.CLARABEL, **solver_kwargs)
         if (problem.status not in (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)) and init_t:
+            # Frame-0 infeasibility fallback: drop ALL SOC constraints (trust region),
+            # including the object SOC -- deliberately the same treatment as the published robot
+            # SOC, so the first step can move away without a step bound.
             constraints = [c for c in constraints if not isinstance(c, cp.constraints.second_order.SOC)]
             problem = cp.Problem(cp.Minimize(cp.sum(obj_terms)), constraints)
             problem.solve(solver=cp.CLARABEL, **solver_kwargs)
