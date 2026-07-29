@@ -1378,6 +1378,13 @@ class InteractionMeshRetargeter:
             pos_world = self.robot_data.xpos[body_id]
 
             if obj_frame:
+                if self.object_variable:
+                    # objvar: the object frame itself moves -- the object-frame point
+                    # velocity is relative: d/dq [R_o^T (p - t_o)] =
+                    # R_o^T (J_point_on_robot - J_object_fixed_point@p), same scheme as
+                    # _compute_jacobian_for_contact_relative.
+                    J = J - self._calc_contact_jacobian_from_point(
+                        self.object_body_id, pos_world, input_world=True)
                 p_XC = obj_rot_inv @ (pos_world - obj_pos)
                 J_XC = obj_rot_inv @ J
             else:
@@ -1385,7 +1392,7 @@ class InteractionMeshRetargeter:
                 J_XC = J
 
             # Store reduced Jacobian and position with hard copies to avoid aliasing
-            J_XC_dict[name] = np.array(J_XC[:, self.q_a_indices], dtype=float, copy=True)  # FIX (copy)
+            J_XC_dict[name] = np.array(J_XC[:, self.q_opt_indices], dtype=float, copy=True)  # FIX (copy)
             p_XC_dict[name] = np.array(p_XC, dtype=float, copy=True)
 
         P_WO = {"position": obj_pos, "rotation": obj_rot} if obj_frame else None
