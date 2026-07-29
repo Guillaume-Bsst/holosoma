@@ -14,7 +14,6 @@ from holosoma.envs.wbt.wbt_manager import WholeBodyTrackingManager
 from holosoma.managers.command.base import CommandTermBase
 from holosoma.utils.file_cache import cached_open
 from holosoma.utils.grasp_settle import (
-    anneal_prob,
     apply_grasp_transform,
     gather_anchor,
     grasp_relative_transform,
@@ -28,7 +27,6 @@ from holosoma.utils.rotations import (
     quat_from_euler_xyz,
     quat_inverse,
     quat_mul,
-    quat_to_angle_axis,
     slerp,
     yaw_quat,
 )
@@ -955,21 +953,9 @@ class MotionCommand(CommandTermBase):
                 torch.full((n, 1), float(self.grasp_settle_cfg.settle_robot_noise_scale), device=self.device),
                 torch.ones(n, 1, device=self.device),
             )  # (n, 1), broadcasts over dof/root noise
-
-            # full-contact weld curriculum: draw the per-episode assist flag with the annealed prob.
-            # Assisted episodes carry the object kinematically at the reference grasp during ALL
-            # reference-contact frames (see step()), so early training never sees an unholdable box.
-            self.weld_assist_prob = anneal_prob(
-                self._env_step_counter,
-                self.grasp_settle_cfg.weld_contact_prob_start,
-                self.grasp_settle_cfg.weld_contact_prob_end,
-                self.grasp_settle_cfg.weld_anneal_steps,
-            )
-            self.weld_assist[env_ids] = torch.rand(n, device=self.device) < self.weld_assist_prob
         else:
             # keep stale settle state from lingering on these envs when settling is off
             self.settle_counter[env_ids] = 0
-            self.weld_assist[env_ids] = False
 
         # 1. Get the root/body poses from the motion data
         root_pos = self.root_pos_w[env_ids].clone()
@@ -1146,119 +1132,64 @@ class MotionCommand(CommandTermBase):
             sim.set_dof_state_tensor_robots(ended_env_ids, sim.dof_state)  # type: ignore[attr-defined]
             sim.refresh_sim_tensors()
 
-        # grasp-settle welds, one unified path (per policy step):
-        #  - settle-window weld (weld_object_during_settle): hold the object through the reset
-        #    transient. The clip is frozen during the window, so the current-reference grasp equals
-        #    the reset-time grasp.
-        #  - full-contact assist weld (curriculum): on assisted episodes, kinematically carry the
-        #    object at the CURRENT reference grasp during all reference-contact frames, so early
-        #    training never sees an unholdable box. The assist probability anneals to 0 -> the
-        #    final policy holds the object fully physically.
-        # Both compute: object_sim = T(hand_sim) o T(hand_ref)^-1 o T(object_ref) at the current frame.
+        # grasp-settle weld: hold the object through the reset transient only
+        # (weld_object_during_settle) -- object_sim = T(hand_sim) o T(hand_ref)^-1 o T(object_ref).
+        # No curriculum/assist beyond this: the box is fully physical at every other frame, and
+        # holding it against gravity is the grip-force controller's job (see
+        # JointPositionActionTerm._compute_grip_force_bias), gated below by grip_active.
         # NOTE: must run AFTER the end-of-clip reset above — time_steps can transiently equal
         # motion_end (out of bounds for the motion arrays) until that reset resamples them.
         if settle_on:
-            self._env_step_counter += 1
-
             anchor_pos_ref = self.anchor_pos_w  # (N, A, 3) reference hand poses at current frame
             anchor_quat_ref = self.anchor_quat_w
             obj_pos_ref = self.object_pos_w
             obj_quat_ref = self.object_quat_w
             anchor_idx_now, ref_contact = self._lookup_ref_contact(self.time_steps, anchor_pos_ref, obj_pos_ref)
 
-            # Kinematic object during contact: box follows the SMOOTH REFERENCE trajectory (pos+quat+
-            # vel from the clip) on every ref-contact frame, always on. The grasp is assumed (real hand
-            # grips at deployment); the policy learns body motion + hand placement. Bulletproof: no
-            # drift, no tumble, box never triggers bad_object_pos. Supersedes the assist weld.
+            # grip-force gating: both hands squeeze whenever the GT reference says the box is being
+            # carried this frame. The dataset only flags the NEAREST hand as "the" contact anchor
+            # (see contact_from_retarget.py), not independent per-hand contact, so this is a
+            # symmetric approximation -- both hands squeeze together on two-hand carry frames.
+            self.grip_active = ref_contact
+
+            # Phase-1 bootstrap only (see GraspSettleConfig.kinematic_object_during_contact): box
+            # forced onto the smooth REFERENCE pose+velocity on every ref-contact frame, so it can
+            # never be dropped while the policy is still learning body tracking + hand placement.
+            # No blend, no annealing -- a fixed on/off switch, turned off for the hard cutover to
+            # grip_force once placement is reliable.
             if self.grasp_settle_cfg.kinematic_object_during_contact:
                 kin_ids = torch.where(ref_contact)[0]
-                cfg_gs = self.grasp_settle_cfg
                 if kin_ids.numel() > 0:
-                    alpha = self._physicality_alpha
                     ref_pos = obj_pos_ref[kin_ids]
                     ref_quat = obj_quat_ref[kin_ids]
                     ref_lin_vel = self.object_lin_vel_w[kin_ids]
                     zeros_ang = torch.zeros(kin_ids.numel(), 3, device=self.device)
-                    if alpha >= 0.999:
-                        # fully kinematic (fast path): box forced onto the reference
-                        kin_state = torch.cat([ref_pos, ref_quat, ref_lin_vel, zeros_ang], dim=-1)
-                        self._env.simulator.set_actor_states([self.object_name], kin_ids, kin_state)
-                    elif cfg_gs.physicality_force_mode:
-                        # FORCE-MODE assist: bounded PD wrench toward the reference. Unlike the
-                        # state blend (infinite-gain: difficulty ~ (1-alpha)/alpha, divergent at
-                        # alpha->0), a capped wrench cannot rescue arbitrary drift — difficulty is
-                        # ~linear in the cap and the cap->0 limit is continuous, so the curriculum
-                        # can actually REACH the fully-physical box. Same nature as the hand
-                        # contact forces that must replace it (a helper letting go).
-                        cur = self._env.simulator.all_root_states[self.object_indices_in_simulator][kin_ids]
-                        force = cfg_gs.force_assist_kp * (ref_pos - cur[:, :3]) + cfg_gs.force_assist_kd * (
-                            ref_lin_vel - cur[:, 7:10]
-                        )
-                        rel = quat_mul(ref_quat, quat_inverse(cur[:, 3:7], w_last=True), w_last=True)
-                        # NB: le 2e retour de quat_to_angle_axis est déjà le rotation VECTOR (axe*angle)
-                        rotvec = quat_to_angle_axis(rel)[1]
-                        torque = cfg_gs.force_assist_kp_rot * rotvec - cfg_gs.force_assist_kd_rot * cur[:, 10:13]
-                        fmax = alpha * cfg_gs.force_assist_fmax
-                        tmax = alpha * cfg_gs.force_assist_tmax
-                        force = force * (fmax / torch.norm(force, dim=-1, keepdim=True).clamp_min(fmax)).clamp(max=1.0)
-                        torque = torque * (tmax / torch.norm(torque, dim=-1, keepdim=True).clamp_min(tmax)).clamp(max=1.0)
-                        # zeros for non-contact envs: the wrench PERSISTS in IsaacLab until
-                        # overwritten, so the full buffer is rewritten every step.
-                        forces_all = torch.zeros(self.num_envs, 3, device=self.device)
-                        torques_all = torch.zeros(self.num_envs, 3, device=self.device)
-                        if alpha > 1e-4:
-                            forces_all[kin_ids] = force
-                            torques_all[kin_ids] = torque
-                        self._env.simulator.set_object_external_wrench(self.object_name, forces_all, torques_all)
-                        # curriculum signal: fraction of contact envs tracking the object
-                        err = torch.norm(ref_pos - cur[:, :3], dim=-1)
-                        self._obj_track_success = float((err < cfg_gs.physicality_success_obj_err).float().mean())
-                    elif alpha > 1e-4:
-                        # PHYSICALITY CURRICULUM partial assist: blend the reference with the box's
-                        # current PHYSICAL state. box = alpha*ref + (1-alpha)*physical. The box slips/
-                        # droops between corrections (physics acts in the substeps), so the policy must
-                        # grip to keep it near the reference. As alpha->0 the box becomes fully physical.
-                        cur = self._env.simulator.all_root_states[self.object_indices_in_simulator][kin_ids]
-                        t = torch.tensor(alpha, device=self.device)
-                        blend = torch.cat(
-                            [
-                                alpha * ref_pos + (1.0 - alpha) * cur[:, :3],
-                                slerp(cur[:, 3:7], ref_quat, t),
-                                alpha * ref_lin_vel + (1.0 - alpha) * cur[:, 7:10],
-                                (1.0 - alpha) * cur[:, 10:13],
-                            ],
-                            dim=-1,
-                        )
-                        self._env.simulator.set_actor_states([self.object_name], kin_ids, blend)
-                    # alpha <= 1e-4: fully physical -> no override, the box is free
-                elif cfg_gs.physicality_force_mode and self._physicality_alpha < 0.999:
-                    # no env in ref-contact this step: clear any persistent wrench
-                    zeros = torch.zeros(self.num_envs, 3, device=self.device)
-                    self._env.simulator.set_object_external_wrench(self.object_name, zeros, zeros)
+                    kin_state = torch.cat([ref_pos, ref_quat, ref_lin_vel, zeros_ang], dim=-1)
+                    self._env.simulator.set_actor_states([self.object_name], kin_ids, kin_state)
 
-            weld_mask = self.weld_assist & ref_contact
             if self.grasp_settle_cfg.weld_object_during_settle:
-                weld_mask = weld_mask | (self.settle_counter > 0)
-            weld_ids = torch.where(weld_mask)[0]
-            if weld_ids.numel() > 0:
-                a_pos_ref, a_quat_ref = gather_anchor(
-                    anchor_pos_ref[weld_ids], anchor_quat_ref[weld_ids], anchor_idx_now[weld_ids]
-                )
-                rel_pos, rel_quat = grasp_relative_transform(
-                    a_pos_ref, a_quat_ref, obj_pos_ref[weld_ids], obj_quat_ref[weld_ids]
-                )
-                a_pos_sim, a_quat_sim = gather_anchor(
-                    self.robot_anchor_pos_w[weld_ids],
-                    self.robot_anchor_quat_w[weld_ids],
-                    anchor_idx_now[weld_ids],
-                )
-                op, oq = apply_grasp_transform(a_pos_sim, a_quat_sim, rel_pos, rel_quat)
-                zeros6 = torch.zeros(weld_ids.numel(), 6, device=self.device)
-                self._env.simulator.set_actor_states(
-                    [self.object_name], weld_ids, torch.cat([op, oq, zeros6], dim=-1)
-                )
+                weld_ids = torch.where(self.settle_counter > 0)[0]
+                if weld_ids.numel() > 0:
+                    a_pos_ref, a_quat_ref = gather_anchor(
+                        anchor_pos_ref[weld_ids], anchor_quat_ref[weld_ids], anchor_idx_now[weld_ids]
+                    )
+                    rel_pos, rel_quat = grasp_relative_transform(
+                        a_pos_ref, a_quat_ref, obj_pos_ref[weld_ids], obj_quat_ref[weld_ids]
+                    )
+                    a_pos_sim, a_quat_sim = gather_anchor(
+                        self.robot_anchor_pos_w[weld_ids],
+                        self.robot_anchor_quat_w[weld_ids],
+                        anchor_idx_now[weld_ids],
+                    )
+                    op, oq = apply_grasp_transform(a_pos_sim, a_quat_sim, rel_pos, rel_quat)
+                    zeros6 = torch.zeros(weld_ids.numel(), 6, device=self.device)
+                    self._env.simulator.set_actor_states(
+                        [self.object_name], weld_ids, torch.cat([op, oq, zeros6], dim=-1)
+                    )
             # advance the settle window: once the counter hits 0 the clip resumes and the weld releases
             self.settle_counter = torch.clamp(self.settle_counter - 1, min=0)
+        else:
+            self.grip_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
@@ -1534,75 +1465,6 @@ class MotionCommand(CommandTermBase):
         anchor_idx, anchor_dist = select_grasp_anchor(anchor_pos, obj_pos)
         return anchor_idx, anchor_dist < self.grasp_settle_cfg.contact_distance_threshold
 
-    @property
-    def object_termination_enabled(self) -> bool:
-        """False quand le force-mode assist est sous object_term_min_alpha : un drop de la box ne
-        tue plus l'épisode (la policy encaisse la perte de reward objet et peut apprendre à
-        récupérer) — sinon le success EMA s'effondre au passage bas-alpha et le curriculum se
-        re-bloque exactement comme avec le blend. Lu par la termination bad_tracking."""
-        cfg = self.grasp_settle_cfg
-        return not (
-            cfg.physicality_force_mode
-            and cfg.object_term_min_alpha > 0.0
-            and self._physicality_alpha < cfg.object_term_min_alpha
-        )
-
-    def update_physicality_curriculum(self, success_rate: float) -> None:
-        """Advance the box-physicality curriculum from the env's aggregate success rate.
-
-        EMA-smooths the per-step success signal; when the EMA clears the threshold AND the cooldown
-        has elapsed, lower the box blend factor ``_physicality_alpha`` by one step (box gets more
-        physical). The step keeps the DIFFICULTY ratio constant rather than the alpha step: the
-        residual drift the policy must absorb scales like ``beta = (1-alpha)/alpha``, so each advance
-        multiplies beta by ``physicality_alpha_ratio`` (``alpha_next = 1/(1+ratio*beta)``). That is
-        geometric in beta, so the alpha step auto-shrinks near the floor where the task is hardest.
-        The first advance out of the kinematic warmup (alpha=1, beta=0) jumps to
-        ``physicality_alpha_start`` since the geometric update cannot leave beta=0 on its own.
-        Monotonic and cooldown-gated so the policy re-adapts between advances; after each advance the
-        EMA is reset so the policy must re-earn the threshold at the new physicality. No-op unless both
-        physicality_curriculum and kinematic_object_during_contact are enabled.
-        """
-        cfg = self.grasp_settle_cfg
-        if not (cfg.physicality_curriculum and cfg.kinematic_object_during_contact):
-            return
-        beta = cfg.physicality_ema_beta
-        # force mode: success = survival ET tracking objet (min des deux) — la survie sature une
-        # fois les terminations objet gatées à bas alpha, le tracking devient le vrai signal.
-        signal = float(success_rate)
-        if cfg.physicality_force_mode and self._physicality_alpha < 1.0 - 1e-6:
-            signal = min(signal, self._obj_track_success)
-        self._success_ema = (1.0 - beta) * self._success_ema + beta * signal
-        self._steps_since_alpha_change += 1
-        alpha_floor = 0.0 if cfg.physicality_force_mode else cfg.physicality_alpha_min
-        if (
-            self._physicality_alpha > alpha_floor
-            and self._success_ema >= cfg.physicality_success_threshold
-            and self._steps_since_alpha_change >= cfg.physicality_cooldown_steps
-        ):
-            alpha = self._physicality_alpha
-            if alpha >= 1.0 - 1e-6:
-                # seed the ladder: leave the kinematic warmup (both modes)
-                new_alpha = cfg.physicality_alpha_start
-            elif cfg.physicality_force_mode:
-                # force mode: difficulty ~ linear in the cap -> multiplicative ladder on alpha,
-                # snap to exactly 0 once the residual cap is noise-level. Finite increments all
-                # the way down — the fully-physical box is REACHABLE.
-                new_alpha = alpha * cfg.physicality_force_alpha_decay
-                if new_alpha < cfg.physicality_force_alpha_snap:
-                    new_alpha = 0.0
-            else:
-                # constant difficulty ratio: grow beta=(1-alpha)/alpha by physicality_alpha_ratio
-                new_beta = (1.0 - alpha) / alpha * cfg.physicality_alpha_ratio
-                new_alpha = 1.0 / (1.0 + new_beta)
-            self._physicality_alpha = max(alpha_floor, new_alpha)
-            self._steps_since_alpha_change = 0
-            self._success_ema = 0.0  # re-earn the threshold at the new physicality before advancing
-            mode = "force cap" if cfg.physicality_force_mode else "blend"
-            logger.info(
-                f"[physicality curriculum] success EMA cleared {cfg.physicality_success_threshold:.2f} "
-                f"-> box alpha ({mode}) -> {self._physicality_alpha:.3f} (1=kinematic, 0=fully physical)"
-            )
-
     #########################################################################################
     ## Methods that does not fit into setup/step/reset pattern
     #########################################################################################
@@ -1618,20 +1480,9 @@ class MotionCommand(CommandTermBase):
         self.settle_grasp_rel_quat = torch.zeros(self.num_envs, 4, device=self.device)
         self.settle_grasp_rel_quat[:, 3] = 1.0  # identity (xyzw)
 
-        # full-contact weld curriculum ("training wheels"): per-episode assist flag drawn at reset
-        # with an annealed probability, and a global env-step counter driving the anneal.
-        self.weld_assist = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        self.weld_assist_prob = 0.0
-        self._env_step_counter = 0
-
-        # physicality curriculum: box blend factor (1=kinematic, 0=physical), success EMA, cooldown.
-        self._physicality_alpha = 1.0
-        self._success_ema = 0.0
-        self._steps_since_alpha_change = 0
-        # force-mode assist: per-step object-tracking success (fraction of ref-contact envs with
-        # object pos error < physicality_success_obj_err), fed to the curriculum instead of pure
-        # survival (which saturates once object terminations are gated off at low alpha).
-        self._obj_track_success = 1.0
+        # grip-force gating (per env): both hands squeeze whenever True. Updated in step(); starts
+        # False so the very first physics substeps (before step() has run once) apply no grip force.
+        self.grip_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # debug hooks used by the offline probe harness (probe_grasp_settle.py):
         #   _force_start_timesteps: if set (long tensor, per env, absolute frame index), reset()
@@ -1686,7 +1537,8 @@ class MotionCommand(CommandTermBase):
 
         # Object/grasp health metrics (object clips only). Read together:
         #   object_held / object_ref_contact = fraction of in-contact frames where the sim box is
-        #   actually near a sim hand. weld_assist_prob tracks the training-wheels anneal.
+        #   actually near a sim hand. No curriculum/assist beyond the reset-transient weld: the box
+        #   is fully physical, held only by the grip-force controller's real contact force.
         if self.motion.has_object and self._anchor_body_indexes is not None:
             sim_obj = self.simulator_object_pos_w
             hand_dist = torch.norm(self.robot_anchor_pos_w - sim_obj.unsqueeze(1), dim=-1).min(dim=1).values
@@ -1706,15 +1558,7 @@ class MotionCommand(CommandTermBase):
                 self.object_lin_vel_w - self.simulator_object_lin_vel_w, dim=-1
             )
             self.metrics["motion/object_height"] = sim_obj[:, 2]
-            self.metrics["motion/weld_assist_prob"] = torch.full_like(hand_dist, float(self.weld_assist_prob))
-            # box physicality curriculum: alpha (1=kinematic, 0=physical) + the success EMA driving it
-            self.metrics["motion/physicality_alpha"] = torch.full_like(hand_dist, float(self._physicality_alpha))
-            self.metrics["motion/physicality_success_ema"] = torch.full_like(hand_dist, float(self._success_ema))
-            if self.grasp_settle_cfg.physicality_force_mode:
-                self.metrics["motion/obj_track_success"] = torch.full_like(hand_dist, float(self._obj_track_success))
-                self.metrics["motion/force_assist_fmax_eff"] = torch.full_like(
-                    hand_dist, float(self._physicality_alpha * self.grasp_settle_cfg.force_assist_fmax)
-                )
+            self.metrics["motion/grip_active"] = self.grip_active.float()
 
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler.get_stats()

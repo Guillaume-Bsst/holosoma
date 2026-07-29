@@ -2,10 +2,10 @@
 
 Companion to probe_grasp_settle.py, but policy-driven: instead of pinning the robot kinematically,
 this loads a training checkpoint (config embedded in the .pt), rebuilds the exact training env with
-a handful of envs, forces a chosen RSI start frame per env, forces the assist-weld ON or OFF per
-env, and records every env's [root pos, root quat wxyz, joints URDF order, obj pos, obj quat wxyz]
-at each control step. Output plays in holosoma_retargeting's viser_player / viser_compare — this is
-how we "see inside" the 4096-env training run without RTX rendering (broken on this driver).
+a handful of envs, forces a chosen RSI start frame per env, and records every env's [root pos, root
+quat wxyz, joints URDF order, obj pos, obj quat wxyz] at each control step. Output plays in
+holosoma_retargeting's viser_player / viser_compare — this is how we "see inside" the 4096-env
+training run without RTX rendering (broken on this driver).
 
 Terminations behave exactly as in training (bad_tracking etc.); on reset the env restarts at the
 same forced frame, so a rollout shows repeated attempts from the same RSI moment.
@@ -14,16 +14,15 @@ Example
 -------
     OMNI_KIT_ACCEPT_EULA=YES python -u -m holosoma.eval_dump_qpos \
         --evald-checkpoint logs/WholeBodyTracking/<run>/model_04000.pt \
-        --evald-frames 140,140,200,200 --evald-weld on,off,on,off \
+        --evald-frames 140,140,200,200 \
         --evald-steps 300 --evald-out /path/prefix \
         --training.num-envs 4 --training.headless True
 
 Flags (popped before tyro; the rest overrides the saved training config):
     --evald-checkpoint PATH   checkpoint .pt (its embedded experiment_config is the base config)
     --evald-frames A,B,...    absolute start frame per env, round-robin (default 200)
-    --evald-weld m1,m2,...    per-env assist-weld forcing: on|off|auto, round-robin (default auto)
     --evald-steps N           control steps to record (default 300)
-    --evald-out PREFIX        writes <prefix>_env<i>_<weld>.npz + <prefix>_meta.json
+    --evald-out PREFIX        writes <prefix>_env<i>.npz + <prefix>_meta.json
 """
 
 from __future__ import annotations
@@ -49,7 +48,6 @@ from holosoma.utils.tyro_utils import TYRO_CONIFG
 class EvalDumpArgs:
     checkpoint: str = ""
     frames: list[int] = [200]
-    weld: list[str] = ["auto"]  # on | off | auto (auto = whatever reset() draws)
     steps: int = 300
     out: str = "eval_dump"
 
@@ -65,9 +63,6 @@ def _pop_args(argv: list[str]) -> tuple[EvalDumpArgs, list[str]]:
             i += 2
         elif tok == "--evald-frames":
             args.frames = [int(x) for x in argv[i + 1].split(",") if x != ""]
-            i += 2
-        elif tok == "--evald-weld":
-            args.weld = [x.strip().lower() for x in argv[i + 1].split(",") if x != ""]
             i += 2
         elif tok == "--evald-steps":
             args.steps = int(argv[i + 1])
@@ -118,9 +113,6 @@ def main() -> None:
     num_envs = env.num_envs
     all_ids = torch.arange(num_envs, device=env.device)
     frames = [evald.frames[e % len(evald.frames)] for e in range(num_envs)]
-    weld_modes = [evald.weld[e % len(evald.weld)] for e in range(num_envs)]
-    force_on = torch.tensor([m == "on" for m in weld_modes], device=env.device)
-    force_off = torch.tensor([m == "off" for m in weld_modes], device=env.device)
 
     # Boot (reset_all re-inits motion-command buffers, clearing the debug hooks) THEN force frames.
     env.reset_all()
@@ -140,14 +132,11 @@ def main() -> None:
     qpos = [[] for _ in range(num_envs)]  # per env, per step: 3+4+29+3+4
     drift = [[] for _ in range(num_envs)]
     dones_trace = [[] for _ in range(num_envs)]
-    weld_trace = [[] for _ in range(num_envs)]
     frame_trace = [[] for _ in range(num_envs)]
     restarts = [0] * num_envs
 
     with torch.no_grad():
         for _step in range(evald.steps):
-            mc.weld_assist[force_on] = True
-            mc.weld_assist[force_off] = False
             actor_obs = torch.cat([obs_dict[k] for k in algo.actor_obs_keys], dim=1)
             actions = policy({"actor_obs": actor_obs})
             obs_dict, _rew, dones, _extras = env.step({"actions": actions})
@@ -169,14 +158,12 @@ def main() -> None:
                 dim=-1,
             ).detach().cpu().numpy()
             done_np = dones.detach().cpu().numpy()
-            weld_np = mc.weld_assist.detach().cpu().numpy()
             frame_np = mc.time_steps.detach().cpu().numpy()
             drift_np = d.detach().cpu().numpy()
             for e in range(num_envs):
                 qpos[e].append(row[e])
                 drift[e].append(float(drift_np[e]))
                 dones_trace[e].append(bool(done_np[e]))
-                weld_trace[e].append(bool(weld_np[e]))
                 frame_trace[e].append(int(frame_np[e]))
                 if done_np[e]:
                     restarts[e] += 1
@@ -189,26 +176,23 @@ def main() -> None:
         "envs": [],
     }
     for e in range(num_envs):
-        tag = weld_modes[e]
-        pth = f"{evald.out}_env{e}_f{frames[e]}_weld-{tag}.npz"
+        pth = f"{evald.out}_env{e}_f{frames[e]}.npz"
         np.savez(pth, qpos=np.asarray(qpos[e], np.float64), fps=np.int64(fps_out))
         meta["envs"].append(
             {
                 "env": e,
                 "npz": pth,
                 "start_frame": frames[e],
-                "weld_mode": tag,
                 "restarts": restarts[e],
                 "final_drift": drift[e][-1],
                 "peak_drift": max(drift[e]),
                 "drift": drift[e],
                 "dones": [i for i, v in enumerate(dones_trace[e]) if v],
-                "weld_on_frac": sum(weld_trace[e]) / len(weld_trace[e]),
                 "ref_frame_trace": frame_trace[e][:: max(1, evald.steps // 100)],
             }
         )
         print(
-            f"[evald] env{e} f{frames[e]} weld={tag}: restarts={restarts[e]} "
+            f"[evald] env{e} f{frames[e]}: restarts={restarts[e]} "
             f"final_drift={drift[e][-1]:.3f} peak={max(drift[e]):.3f} -> {pth}",
             flush=True,
         )

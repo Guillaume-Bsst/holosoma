@@ -54,7 +54,8 @@ motion_config = MotionConfig(
 
 # Object clip: enable grasp-consistent init + settling so mid-clip contact resets don't eject/drop
 # the box. A+B here (contact-consistent placement + freeze + termination grace); weld is left off and
-# can be toggled for the hardest clips (or exercised via probe_grasp_settle.py).
+# can be toggled for the hardest clips (or exercised via probe_grasp_settle.py). No curriculum/assist:
+# the box is fully physical from step 0, held by the grip-force controller (see GripForceCfg).
 grasp_settle_config = GraspSettleConfig(
     enable=True,
     contact_distance_threshold=0.35,  # wrist<->box ~0.21-0.28m when carried, ~0.5-0.8m when free
@@ -63,13 +64,6 @@ grasp_settle_config = GraspSettleConfig(
     freeze_clip_during_settle=True,
     disable_termination_during_settle=True,
     weld_object_during_settle=False,
-    # Training-wheels curriculum: episodes start fully assisted (object kinematically carried at
-    # the reference grasp during contact frames) and the assist probability anneals linearly to 0
-    # over the first ~400k env steps (~55% of a 30k-iteration PPO run), so the FINAL policy holds
-    # the object fully physically while early training always gets a holdable box.
-    weld_contact_prob_start=1.0,
-    weld_contact_prob_end=0.0,
-    weld_anneal_steps=400_000,
 )
 
 motion_config_w_object = replace(
@@ -107,6 +101,29 @@ g1_29dof_wbt_command_w_object = replace(
             func="holosoma.managers.command.terms.wbt:MotionCommand",
             params={
                 "motion_config": motion_config_w_object,
+            },
+        )
+    },
+)
+
+# Phase 1 of the two-phase grip-force bootstrap: box glued kinematically to the reference during
+# contact (see GraspSettleConfig.kinematic_object_during_contact) so the policy can learn body
+# tracking + hand placement without also needing to hold the box physically. Phase 2 (hard cutover,
+# not a gradual anneal) turns this off and grip_force.enable on, resuming from the phase-1 checkpoint.
+grasp_settle_config_phase1_kinematic = replace(grasp_settle_config, kinematic_object_during_contact=True)
+
+motion_config_w_object_phase1_kinematic = replace(
+    motion_config_w_object,
+    grasp_settle=grasp_settle_config_phase1_kinematic,
+)
+
+g1_29dof_wbt_command_w_object_phase1_kinematic = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_w_object_phase1_kinematic,
             },
         )
     },
@@ -150,6 +167,7 @@ g1_27dof_wbt_command_w_object = replace(
 __all__ = [
     "g1_29dof_wbt_command",
     "g1_29dof_wbt_command_w_object",
+    "g1_29dof_wbt_command_w_object_phase1_kinematic",
     "g1_27dof_wbt_command",
     "g1_27dof_wbt_command_w_object",
 ]

@@ -14,6 +14,7 @@ from holosoma.config_values import (
     termination,
     terrain,
 )
+from holosoma.config_values.wbt.g1.action import g1_29dof_joint_pos_grip_force
 
 g1_29dof_wbt = ExperimentConfig(
     training=TrainingConfig(
@@ -170,6 +171,24 @@ g1_29dof_wbt_w_object = replace(
     ),
 )
 
+g1_29dof_wbt_w_object_grip_force = replace(
+    g1_29dof_wbt_w_object,
+    training=replace(g1_29dof_wbt_w_object.training, name="g1_29dof_wbt_w_object_grip_force"),
+    action=g1_29dof_joint_pos_grip_force,
+)
+
+# Phase 1 of the two-phase bootstrap (see GraspSettleConfig.kinematic_object_during_contact): box
+# glued kinematically during contact, grip_force OFF (nothing for it to hold while the box is
+# kinematic) -- learn body tracking + hand placement first. Phase 2: resume from this run's
+# checkpoint with g1_29dof_wbt_w_object_grip_force (kinematic off, grip_force on) via
+# --training.checkpoint.
+g1_29dof_wbt_w_object_grip_force_phase1_kinematic = replace(
+    g1_29dof_wbt_w_object,
+    training=replace(g1_29dof_wbt_w_object.training, name="g1_29dof_wbt_w_object_grip_force_phase1_kinematic"),
+    command=command.g1_29dof_wbt_command_w_object_phase1_kinematic,
+    action=action.g1_29dof_joint_pos,
+)
+
 g1_29dof_wbt_fast_sac_w_object = replace(
     g1_29dof_wbt_fast_sac,
     command=command.g1_29dof_wbt_command_w_object,
@@ -275,6 +294,8 @@ __all__ = [
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_w_object",
     "g1_29dof_wbt_w_object_actor",
+    "g1_29dof_wbt_w_object_grip_force",
+    "g1_29dof_wbt_w_object_grip_force_phase1_kinematic",
     "g1_27dof_wbt",
     "g1_27dof_wbt_w_object",
     "g1_27dof_wbt_w_object_actor",

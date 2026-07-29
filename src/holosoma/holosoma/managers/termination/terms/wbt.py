@@ -70,10 +70,7 @@ class BadTracking(TerminationTermBase):
         bad_motion_body_pos = self.bad_motion_body_pos(motion_command)
         bad_tracking = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
 
-        # object terminations gated off at low force-mode assist (object_term_min_alpha): a drop
-        # must be a reward loss the policy can learn from, not an episode kill that collapses the
-        # curriculum's success signal right when the box goes fully physical.
-        if motion_command.motion.has_object and getattr(motion_command, "object_termination_enabled", True):
+        if motion_command.motion.has_object:
             bad_object_pos = self.bad_object_pos(motion_command)
             bad_object_ori = self.bad_object_ori(motion_command)
             bad_tracking |= bad_object_pos | bad_object_ori

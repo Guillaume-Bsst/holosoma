@@ -1036,10 +1036,17 @@ def randomize_object_rigid_body_mass_startup(
     env_ids: Sequence[int] | torch.Tensor | None = None,
     *,
     mass_distribution_params: Sequence[float],
+    operation: str = "add",
     enabled: bool = True,
     **_,
 ) -> None:
-    """Randomize object rigid body mass."""
+    """Randomize object rigid body mass.
+
+    operation="add" adds a value sampled from mass_distribution_params (kg) to the asset's URDF
+    default mass; operation="abs" sets the mass directly to a value sampled from
+    mass_distribution_params (kg), ignoring the URDF default -- use "abs" when you want the config
+    range to directly state the final mass range regardless of the placeholder URDF mass.
+    """
     if not enabled:
         return
 
@@ -1071,7 +1078,7 @@ def randomize_object_rigid_body_mass_startup(
         env_ids_cpu,
         asset_cfg,
         (mass_distribution_params[0], mass_distribution_params[1]),
-        operation="add",
+        operation=operation,
     )
 
 

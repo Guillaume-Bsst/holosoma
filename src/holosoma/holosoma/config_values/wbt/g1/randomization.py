@@ -39,7 +39,11 @@ object_state_dr_at_setup = {
     "randomize_object_rigid_body_mass_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_mass_startup",
         params={
-            "mass_distribution_params": [1.0, 4.0],
+            # abs: the range below IS the final mass (kg), independent of the URDF's own mass value.
+            # Real box weighs 0.811 kg -- randomize around ~1 kg so the policy doesn't overfit to one
+            # exact weight.
+            "mass_distribution_params": [0.8, 1.2],
+            "operation": "abs",
         },
     ),
     "randomize_object_rigid_body_inertia_startup": RandomizationTermCfg(

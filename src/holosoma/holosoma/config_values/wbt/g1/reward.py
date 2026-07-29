@@ -126,7 +126,7 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
         ),
         # Contact QUALITY (option 2): reward the hand's flat-face keypoints to be flush against the
         # box (patch contact that resists rotation). Independent of the reference witness -- teaches
-        # HOW to grip, pairs with the physicality curriculum. sigma=0.03 m (flush within a few cm).
+        # HOW to grip, pairs with the grip-force controller. sigma=0.03 m (flush within a few cm).
         "object_flat_contact_quality_exp": RewardTermCfg(
             func="holosoma.managers.reward.terms.wbt:object_flat_contact_quality_exp",
             params={"sigma": 0.03},

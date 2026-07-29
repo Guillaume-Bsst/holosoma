@@ -211,8 +211,8 @@ def object_flat_contact_quality_exp(env: WholeBodyTrackingManager, sigma: float)
     to the box-local frame and reward ALL K being at the box surface via exp(-mean(signed_dist^2)/
     sigma^2). K>=3 coplanar points at distance 0 == a flat patch pressed against the box face, which
     resists the rotational escape a single contact point cannot (the 155deg tumble). Pairs with the
-    physicality curriculum: once the box is physical the policy must present this patch to hold it.
-    Neutral (1) off contact frames / without an object.
+    grip-force controller: the box is physical from step 0, so the policy must present this patch to
+    hold it. Neutral (1) off contact frames / without an object.
     """
     from holosoma.utils.box_geometry import box_nearest_and_signed_distance
     from holosoma.utils.grasp_settle import gather_anchor

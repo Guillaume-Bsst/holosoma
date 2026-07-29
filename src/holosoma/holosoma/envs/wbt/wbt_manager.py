@@ -87,8 +87,6 @@ class WholeBodyTrackingManager(BaseTask):
             success = resetting & (self.time_out_buf | motion_ended)
             success_rate = success.float().sum() / resetting.float().sum()
             self.log_dict["motion/success_rate"] = success_rate
-            # drive the box-physicality curriculum (no-op unless it is enabled)
-            motion_command.update_physicality_curriculum(float(success_rate))
 
     def reset_all(self):
         # If reset_all is called several times, clear buffer in motion_command

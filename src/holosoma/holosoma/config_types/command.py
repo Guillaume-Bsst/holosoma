@@ -113,134 +113,22 @@ class GraspSettleConfig:
     then release. Robustness upgrade for clips where the object still pops after settling.
     Applied per policy step (not per physics substep)."""
 
-    # --- full-contact weld curriculum ("training wheels") -------------------------------------
-    # Independently of the settle window, an episode can be "assisted": whenever the REFERENCE is
-    # in contact (nearest reference hand within contact_distance_threshold of the reference object),
-    # the object is kinematically carried at the reference grasp transform applied to the SIM hand.
-    # The assist probability is drawn per episode at reset and annealed over training so early
-    # learning sees a stable carry (no cold-start "box always falls -> no signal") while the final
-    # policy holds the object fully physically.
-    weld_contact_prob_start: float = 0.0
-    """Episode-assist probability at step 0 of training. 0.0 disables the curriculum entirely."""
+    # --- grip force: closed-loop wrist force control replaces the OLD curriculum/assist ---------
+    # No box-physicality alpha-blend, no full-contact weld assist: holding the box is the grip-force
+    # controller's job (JointPositionActionTerm._compute_grip_force_bias), gated on the same GT
+    # contact flag used above (see MotionCommand.grip_active / _lookup_ref_contact). See GripForceCfg
+    # (config_types/action.py) for the force-control parameters.
 
-    weld_contact_prob_end: float = 0.0
-    """Episode-assist probability after weld_anneal_steps env steps (keep 0.0 so the final policy
-    is never assisted)."""
-
-    weld_anneal_steps: int = 400_000
-    """Env steps over which the assist probability anneals linearly from start to end.
-    (~55% of a 30k-iteration PPO run at 24 steps/iteration.)"""
-
-    # --- physicality curriculum: gradually make the box physical as the policy succeeds ---------
-    physicality_curriculum: bool = False
-    """Adaptive curriculum on top of kinematic_object_during_contact. The kinematic override is
-    blended by ``alpha`` in [0,1]: box_state = alpha*reference + (1-alpha)*physical, per contact step.
-    alpha=1 = fully kinematic (box forced to reference, current behaviour); alpha=0 = fully physical
-    (box free, the robot must physically hold it); intermediate = partial assist (the box slips/droops
-    between corrections, so the policy must grip to keep it near the reference). alpha starts at 1 and
-    DECREASES on a constant-difficulty schedule whenever the success-rate EMA exceeds
-    physicality_success_threshold (with a cooldown for the policy to re-adapt), down to
-    physicality_alpha_min. The step is NOT uniform in alpha: the residual box drift the policy must
-    absorb scales like beta = (1-alpha)/alpha, which explodes as alpha->0, so a uniform alpha step is a
-    tiny difficulty jump near 1 and an infinite one near 0. Instead we keep the difficulty RATIO
-    constant: each advance multiplies beta by physicality_alpha_ratio (alpha_next = 1/(1+ratio*beta)),
-    which is geometric in beta and auto-shrinks the alpha step near 0. Monotonic (alpha never rises); if
-    success drops the curriculum just waits, so it plateaus at the most-physical box the policy can
-    hold. Requires kinematic_object_during_contact=True. Teaches gripping while staying convergent."""
-
-    physicality_success_threshold: float = 0.9
-    """Success-rate EMA above which alpha is decreased (box made more physical)."""
-
-    physicality_alpha_ratio: float = 1.2
-    """Constant factor by which the difficulty beta=(1-alpha)/alpha grows at each advance
-    (alpha_next = 1/(1 + ratio*beta)). >1 makes the box more physical each step; larger = coarser,
-    faster, riskier. Anchored on the old uniform schedule, whose clean middle steps sat near a beta
-    ratio of ~1.5-1.7; 1.2 is deliberately gentler for the hard approach to the floor."""
-
-    physicality_alpha_start: float = 0.9
-    """Alpha reached on the FIRST advance out of the fully-kinematic warmup (alpha=1). Needed because
-    beta=(1-alpha)/alpha is 0 at alpha=1, so the geometric-in-beta update cannot leave 1 on its own."""
-
-    physicality_alpha_min: float = 0.05
-    """Floor for alpha (curriculum barrier). Kept > 0 on purpose: the geometric schedule never reaches
-    0 anyway, and alpha<=1e-4 is treated as a fully-free box (no override), which the fingerless hand
-    cannot hold -> episodes die on bad_object_pos. 0.05 leaves a light kinematic leash (~95% physical
-    box) while staying well under the object termination threshold. This kinematic floor is a probe /
-    scaffold, NOT a sim2real endpoint: a faithful deployment needs a physical grasp constraint."""
-
-    physicality_cooldown_steps: int = 2000
-    """Policy steps to wait after each alpha decrease before checking the threshold again (lets the
-    policy re-adapt to the new physicality before advancing further)."""
-
-    physicality_ema_beta: float = 0.02
-    """EMA smoothing for the per-step success signal (higher = more reactive, noisier)."""
-
-    # --- force-mode assist: bounded PD wrench instead of the state blend -----------------------
-    physicality_force_mode: bool = False
-    """Replace the state-blend assist with a BOUNDED PD WRENCH toward the reference on contact
-    frames. The blend is an infinite-gain controller: it rewrites the object STATE regardless of
-    the force that would require, so its residual difficulty scales like beta=(1-alpha)/alpha and
-    the final step to alpha=0 is an infinite difficulty jump — the curriculum structurally cannot
-    finish (observed: stuck at the alpha floor, policy leans on the crutch, sim2sim drops the box
-    at deposit). A capped wrench cannot rescue arbitrary drift: difficulty is ~linear in the cap
-    and the cap->0 limit is CONTINUOUS (a human helper progressively letting go — same nature as
-    the hand contact forces that must replace it). alpha keeps its curriculum role: 1 = kinematic
-    warmup (state override, unchanged); <1 = PD wrench with caps alpha*force_assist_fmax /
-    alpha*force_assist_tmax; 0 = fully free box. Ladder in force mode is multiplicative
-    (physicality_force_alpha_decay, snap to exactly 0 below physicality_force_alpha_snap) and
-    ignores physicality_alpha_min. Success is measured on OBJECT TRACKING, not survival
-    (physicality_success_obj_err) — required because object terminations are gated off at low
-    alpha (object_term_min_alpha), so survival saturates. Requires physicality_curriculum and
-    kinematic_object_during_contact."""
-
-    force_assist_fmax: float = 12.0
-    """Force cap (N) at alpha=1: the assist can at most fully carry ~1.5x a 0.8 kg box."""
-
-    force_assist_tmax: float = 1.5
-    """Torque cap (N.m) at alpha=1 for the orientation PD."""
-
-    force_assist_kp: float = 200.0
-    """Assist stiffness (N/m). Stiff on purpose: gravity sag at full weight is m*g/kp (~4 cm at
-    8 N) — the CAP does the difficulty limiting, not the gain."""
-
-    force_assist_kd: float = 20.0
-    """Assist damping (N/(m/s)) toward the reference velocity."""
-
-    force_assist_kp_rot: float = 8.0
-    """Orientation stiffness (N.m/rad)."""
-
-    force_assist_kd_rot: float = 0.5
-    """Angular damping (N.m/(rad/s)); damps to zero angular velocity (carry reference is quasi-static)."""
-
-    physicality_force_alpha_decay: float = 0.75
-    """Force-mode ladder: alpha (hence both caps) multiplies by this on each advance."""
-
-    physicality_force_alpha_snap: float = 0.05
-    """Below this alpha the force-mode ladder snaps to exactly 0 (fully free box) — the residual
-    cap (<0.6 N) is noise-level, holding a rung there teaches nothing."""
-
-    physicality_success_obj_err: float = 0.10
-    """Force mode: curriculum success = fraction of ref-contact envs whose object position error
-    is under this (m), EMA'd, combined (min) with the survival rate so the warmup still requires
-    surviving episodes."""
-
-    object_term_min_alpha: float = 0.2
-    """Below this assist alpha, bad_object_pos/ori terminations are DISABLED: a drop stops paying
-    object rewards for the rest of the clip instead of killing the episode. Makes drops learnable
-    (recovery gradient exists) and keeps the curriculum signal meaningful near alpha=0. Force mode
-    only; 0.0 restores always-on object terminations."""
-
-    # --- kinematic object during contact (the reliable "make it work" grasp) ------------------
     kinematic_object_during_contact: bool = False
-    """When True, the object is KINEMATIC on every reference-contact frame: its pose+velocity are set
-    to the REFERENCE trajectory (clip) each policy step, always on (no anneal, no probability). This is
-    the standard manipulation-from-mocap treatment: a small-contact hand model cannot robustly hold a
-    box by friction under imperfect tracking (empirically: box drifts ~25cm mid-carry and the episode
-    dies on bad_object_pos), so instead the grasp is *assumed* (the real robot's hand grips for real at
-    deployment) and the policy learns the BODY motion + hand PLACEMENT (via object_grasp_relative_error).
-    Unlike the (buggy) assist weld this welds to the SMOOTH REFERENCE with the reference velocity (not to
-    the lagging sim hand with zero velocity -> no tumble), so the box never drifts and never kills the
-    episode. Supersedes weld_contact_prob_* when enabled."""
+    """Phase-1 bootstrap switch ONLY (not a curriculum -- fixed on/off, no annealing). When True, the
+    object is KINEMATIC on every reference-contact frame: its pose+velocity are forced to the
+    REFERENCE trajectory each policy step, so the box can never be dropped and the policy can focus
+    on learning body tracking + hand placement without also having to hold the box physically (grip
+    force should be disabled while this is on -- there's nothing for it to hold). Once hand placement
+    is reliable (object_hand_dist / object_held no longer plateaued), the plan is a HARD cutover: turn
+    this off and grip_force.enable on in one step, resume training from that checkpoint -- not a
+    gradual blend like the old alpha curriculum (which never converged for this exact reason: an
+    infinite-gain kinematic override has no continuous path to zero)."""
 
     flat_contact_offsets: list[list[float]] = field(
         default_factory=lambda: [
