@@ -118,6 +118,34 @@ class TaskConfig:
     motion_end_timestep: int | None = None
     """Ending timestep for motion clip playback. If None, plays until the end."""
 
+    object_motion_file: str | None = None
+    """Path to the training motion NPZ (with object_pos_w/object_quat_w) for object-carry policies.
+    Required by g1-29dof-wbt-w-object: the actor obs includes the box pose relative to the reference
+    root (obj_pos_b + obj_ori_b, 9 dims). Since the box tracks the reference during contact
+    (kinematic), that relative transform is derived directly from this clip, indexed by the motion
+    timestep -- no external box-pose channel needed for sim-to-sim. For real deployment this is where
+    a live mocap/RGB-D box pose would be substituted."""
+
+    motion_prepend_timesteps: int = 0
+    """Number of default-pose prepend frames the trained motion has ahead of the clip (matches the
+    training MotionConfig default_pose_prepend). The object-obs lookup pads the clip's object/root
+    trajectory by this many frames (holding frame 0) so the timestep indexing aligns with the ONNX."""
+
+    zero_object_obs: bool = False
+    """Debug: feed zeros for obj_pos_b/obj_ori_b instead of the clip lookup. WARNING: object-actor
+    checkpoints never saw zeroed object obs in training -- this is pure out-of-distribution input
+    (actions blow up ~4x), NOT a valid isolation switch for them."""
+
+    live_object_obs: bool = False
+    """Closed-loop object obs (sim2sim): subscribe to run_sim's free-box pose stream (ZMQ port 5556,
+    published by SimulatorBridge whenever --simulator.config.sim.add-box spawned a box) and compute
+    obj_pos_b/obj_ori_b from the REAL simulated box relative to the robot's REAL torso (pinocchio fk
+    on the low state, which carries the true world root position in sim2sim). This closes the loop
+    the clip lookup leaves open: the policy can correct its hands onto the box even when the box is
+    not exactly on the reference trajectory. Falls back to the clip lookup until the first pose
+    message arrives, so keep --task.object-motion-file set as well. Real-robot deployment would need
+    odometry + a mocap/RGB-D box pose feeding the same channel."""
+
     debug: DebugConfig = DebugConfig()
     """Debug overrides for quick testing."""
 

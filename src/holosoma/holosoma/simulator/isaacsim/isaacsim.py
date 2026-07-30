@@ -447,6 +447,47 @@ class IsaacSim(BaseSimulator):
             self._object = RigidObject(object_cfg)
             self.scene.rigid_objects[object_name] = self._object
 
+        # add the static support (table) if the clip carries one: fixed-base rigid object, one per
+        # env, posed from the clip's support_pos_w/quat_w at reset. Collision-only surface for the
+        # box deposit (the box rests ON it) -- not baked into the terrain, so it has a real SDF.
+        if self.robot_config.object.support_urdf_path:
+            support_asset_path = resolve_data_file_path(self.robot_config.object.support_urdf_path)
+            # Not fix_base: a fixed-base body has no writable root state in IsaacLab, and the pose is
+            # only known after the clip loads. Instead a gravity-disabled heavy body, pose written
+            # from the clip and re-planted each reset -> stays put (the box only touches it briefly
+            # at deposit) while keeping the standard root-state API.
+            support_cfg = RigidObjectCfg(
+                prim_path="/World/envs/env_.*/Support",
+                spawn=sim_utils.UrdfFileCfg(
+                    fix_base=False,
+                    replace_cylinders_with_capsules=False,
+                    asset_path=support_asset_path,
+                    activate_contact_sensors=True,
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                        disable_gravity=True,
+                        retain_accelerations=False,
+                        linear_damping=1.0,
+                        angular_damping=1.0,
+                        max_linear_velocity=0.0,
+                        max_angular_velocity=0.0,
+                        max_depenetration_velocity=1.0,
+                    ),
+                    articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+                        enabled_self_collisions=False,
+                        solver_position_iteration_count=8,
+                        solver_velocity_iteration_count=4,
+                    ),
+                    # requis par le convertisseur URDF même pour un corps sans joint (table rigide) :
+                    # gains nuls (aucun drive), comme l'objet box ci-dessus.
+                    joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+                        gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
+                    ),
+                ),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.5)),
+            )
+            self._support = RigidObject(support_cfg)
+            self.scene.rigid_objects["support"] = self._support
+
         # add lights
         # light_config = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.98, 0.95, 0.88))
         # light_config.func("/World/Light", light_config)
@@ -1103,6 +1144,77 @@ class IsaacSim(BaseSimulator):
         actor_indices = self.get_actor_indices(names, env_ids)
         self.all_root_states[actor_indices, :13] = states
         self.write_state_updates()
+
+    def set_object_external_wrench(self, name: str, forces_w: torch.Tensor, torques_w: torch.Tensor) -> None:
+        """Set a persistent external wrench (WORLD frame) on a scene rigid object, all envs.
+
+        Used by the force-mode object assist (bounded PD toward the reference). IsaacLab 2.1
+        applies external forces in the body LOCAL frame (is_global=False hardcoded — same
+        constraint as the virtual gantry), so world vectors are rotated into the object frame
+        here. The wrench persists across the decimation substeps (scene.write_data_to_sim runs
+        each physics step) until overwritten: callers must write ZEROS to clear, every step.
+
+        Parameters
+        ----------
+        name : str
+            Rigid object key in ``self.scene.rigid_objects``.
+        forces_w, torques_w : torch.Tensor
+            (num_envs, 3) world-frame force / torque per env.
+        """
+        from isaaclab.utils.math import quat_apply_inverse
+
+        obj = self.scene.rigid_objects[name]
+        quat_w = obj.data.root_quat_w  # (N, 4) wxyz
+        obj.set_external_force_and_torque(
+            forces=quat_apply_inverse(quat_w, forces_w).unsqueeze(1),
+            torques=quat_apply_inverse(quat_w, torques_w).unsqueeze(1),
+            # FIXME: use is_global=True when upgrading IsaacSim/Lab (cf. virtual_gantry)
+        )
+
+    def get_object_masses(self, name: str) -> torch.Tensor:
+        """Per-env effective mass (kg) of a scene rigid object, including startup randomisation.
+
+        Masses live on CPU in the PhysX view; callers should cache the result.
+
+        Parameters
+        ----------
+        name : str
+            Rigid object key in ``self.scene.rigid_objects``.
+
+        Returns
+        -------
+        torch.Tensor
+            (num_envs,) mass per environment.
+        """
+        obj = self.scene.rigid_objects[name]
+        # (num_instances, num_bodies) -> (num_envs,); a RigidObject has a single body.
+        return obj.root_physx_view.get_masses().to(self.sim_device).reshape(-1)
+
+    def get_object_gravity_force(self, name: str) -> torch.Tensor:
+        """Per-env gravitational force (WORLD frame, points down) on a scene rigid object.
+
+        Used by the force-mode object assist to feed the object's weight forward instead of making
+        the tracking PD fight it. Reads the EFFECTIVE per-env mass from PhysX, so the startup mass
+        randomisation is included (the trained box is not the URDF's nominal mass).
+
+        Masses live on CPU in the PhysX view; callers should cache the result — this is a startup
+        randomisation, the masses do not change during an episode.
+
+        Parameters
+        ----------
+        name : str
+            Rigid object key in ``self.scene.rigid_objects``.
+
+        Returns
+        -------
+        torch.Tensor
+            (num_envs, 3) world-frame weight vector m*g per environment.
+        """
+        obj = self.scene.rigid_objects[name]
+        # (num_instances, num_bodies) -> (num_envs,); a RigidObject has a single body.
+        masses = obj.root_physx_view.get_masses().to(self.sim_device).reshape(-1)
+        gravity = torch.tensor(self.sim.cfg.gravity, device=self.sim_device, dtype=masses.dtype)
+        return masses.unsqueeze(-1) * gravity.unsqueeze(0)
 
     def get_actor_initial_poses(self, names: ActorNames, env_ids: EnvIds | None = None) -> ActorPoses:
         """See base class."""

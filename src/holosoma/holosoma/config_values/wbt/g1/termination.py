@@ -40,7 +40,11 @@ g1_29dof_wbt_termination = TerminationManagerCfg(
                 ],
                 # object tracking
                 # only triggered when has_object=True
-                "bad_object_pos_threshold": 0.25,
+                # Resserre 0.25 -> 0.15 : le succes de tracking est a 0.10 m, donc 0.25 laissait 15 cm
+                # de bande morte ou la boite flotte sans tuer l'episode et sans pression a se recaler
+                # sous 10 cm. 0.15 supprime l'essentiel de cette bande (marge 5 cm sur le rayon de
+                # succes pour ne pas tuer sur du bruit / transitoires de contact).
+                "bad_object_pos_threshold": 0.15,
                 "bad_object_ori_threshold": 0.8,
             },
         ),

@@ -14,7 +14,7 @@ from loguru import logger
 
 from holosoma.bridge import BasicSdk2Bridge, create_sdk2py_bridge
 from holosoma.config_types.simulator import BridgeConfig
-from holosoma.utils.clock import ClockPub
+from holosoma.utils.clock import ClockPub, PosePub
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
@@ -53,6 +53,10 @@ class SimulatorBridge:
 
         # Initialize clock publisher for WBT motion synchronization
         self.clock_pub: ClockPub = ClockPub()
+        # Object-pose publisher: streams the run_sim free box's REAL world pose so the inference
+        # side can close the loop on it (--task.live-object-obs). Only publishes when the
+        # simulator actually spawned a box (get_free_box_pose returns non-None).
+        self.object_pose_pub: PosePub = PosePub()
 
         if self.bridge_config.interface is None:
             interface = self._auto_detect_interface()
@@ -64,6 +68,7 @@ class SimulatorBridge:
             self._init_robot_bridge()
             # Start clock publisher for motion synchronization
             self.clock_pub.start()
+            self.object_pose_pub.start()
             logger.info("Clock publisher initialized for motion synchronization")
         else:
             # We don't support runtime toggling on/off
@@ -144,6 +149,11 @@ class SimulatorBridge:
         # Publish simulation clock for e.g, WBT policies
         sim_time = self.simulator.time()
         self.clock_pub.publish(sim_time)
+
+        # Publish the free box's + torso's real world poses for closed-loop object obs (if a box exists)
+        poses = getattr(self.simulator, "get_free_box_and_ref_pose", lambda: None)()
+        if poses is not None:
+            self.object_pose_pub.publish(*poses)
 
     def is_enabled(self) -> bool:
         """Check if the bridge is enabled and functional.

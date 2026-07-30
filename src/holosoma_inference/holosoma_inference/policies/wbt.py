@@ -16,6 +16,7 @@ from holosoma_inference.utils.clock import ClockSub
 from holosoma_inference.utils.math.quat import (
     matrix_from_quat,
     quat_mul,
+    quat_rotate_inverse,
     quat_to_rpy,
     rpy_to_quat,
     subtract_frame_transforms,
@@ -56,6 +57,59 @@ class WholeBodyTrackingPolicy(BasePolicy):
 
         super().__init__(config)
         self._configure_action_scales()
+
+        # Object-carry policies need obj_pos_b/obj_ori_b in the actor obs. The box tracks the
+        # reference during contact (kinematic in training), so that box-pose-in-reference-root-frame
+        # transform is derived from the clip itself and indexed by the motion timestep.
+        self._obj_pos_b_traj = None
+        self._obj_ori_b_traj = None
+        # Static support table (e.g. the drop-off table): position/orientation relative to the
+        # moving torso frame, same clip-derived math as obj_pos_b/obj_ori_b -- only populated when
+        # the clip carries support_pos_w/support_quat_w (see wbt_w_object_support obs preset).
+        self._support_pos_b_traj = None
+        self._support_ori_b_traj = None
+        if getattr(config.task, "object_motion_file", None):
+            self._load_object_motion(config.task.object_motion_file, config.task.motion_prepend_timesteps)
+
+        # Closed-loop object obs (sim2sim): pose of the REAL simulated box streamed by run_sim's
+        # SimulatorBridge. See TaskConfig.live_object_obs. Clip lookup remains the fallback until
+        # the first pose message lands.
+        self._object_pose_sub = None
+        self._live_obs_active = False  # for one-shot logging of the fallback->live transition
+        if getattr(config.task, "live_object_obs", False):
+            from holosoma_inference.utils.clock import PoseSub  # noqa: PLC0415 -- optional feature
+
+            self._object_pose_sub = PoseSub()
+            self._object_pose_sub.start()
+            logger.info("Live object obs enabled: subscribing to run_sim box pose (port 5556)")
+
+        # Guard both ways so the two obs shapes never get crossed:
+        #  - object config (obj_pos_b in actor_obs) but no clip -> the obs assembly would KeyError on
+        #    the missing term; fail early with an actionable message instead.
+        #  - a clip was passed but the config has no object terms -> the extra obs would be silently
+        #    dropped; warn so the mismatch is visible.
+        actor_terms = self.obs_dict.get("actor_obs", [])
+        wants_object = "obj_pos_b" in actor_terms
+        if wants_object and self._obj_pos_b_traj is None and self._object_pose_sub is None:
+            raise ValueError(
+                "Inference config expects object observations (obj_pos_b/obj_ori_b) but no "
+                "--task.object-motion-file was given. Pass the training clip NPZ, or use "
+                "inference:g1-29dof-wbt (non-object / full-loco) instead."
+            )
+        if self._obj_pos_b_traj is not None and not wants_object:
+            logger.warning(
+                "object_motion_file was provided but this obs config has no obj_pos_b/obj_ori_b terms "
+                "(non-object policy); the object motion will be ignored."
+            )
+
+        wants_support = "support_pos_b" in actor_terms
+        if wants_support and self._support_pos_b_traj is None:
+            raise ValueError(
+                "Inference config expects support-table observations (support_pos_b/support_ori_b) "
+                "but the clip passed via --task.object-motion-file has no support_pos_w/support_quat_w "
+                "fields. Use a clip that was exported with the static support table, or use "
+                "inference:g1-29dof-wbt-w-object (no support terms) instead."
+            )
 
         # Load stiff startup parameters from robot config
         if config.robot.stiff_startup_pos is not None:
@@ -100,6 +154,71 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 _show_warning()
         else:
             _show_warning()
+
+    def _load_object_motion(self, npz_path: str, prepend: int) -> None:
+        """Precompute obj_pos_b (3) + obj_ori_b (6D) per motion frame from the training clip.
+
+        obj_pos_b/obj_ori_b are the box pose expressed in the REF-BODY frame -- torso_link, matching
+        training's obj_pos_b/obj_ori_b terms which use robot_ref_pos_w/robot_ref_quat_w
+        (= motion_config.body_name_ref, the torso), NOT the pelvis root. Both the box and the torso
+        come from the same clip, so the transform is clip-internal (independent of where the robot
+        actually is in the world) and matches what the policy saw in training whenever the robot and
+        box tracked the reference (contact frames -- kinematic -- and rest). We hold frame 0 for the
+        `prepend` default-pose frames so the index lines up with the ONNX motion timestep.
+        """
+        data = np.load(npz_path)
+        obj_pos = np.asarray(data["object_pos_w"], np.float32)  # (T, 3) world
+        obj_quat = np.asarray(data["object_quat_w"], np.float32)  # (T, 4) wxyz
+        # Reference body = torso_link (training body_name_ref), taken from the clip's body tracks.
+        # Using the pelvis root here instead is ~5 cm off at stand but up to ~0.45 m / a large
+        # rotation off mid-clip when the reference leans to pick the box.
+        body_names = [str(n) for n in data["body_names"]]
+        ref_idx = body_names.index("torso_link")
+        root_pos = np.asarray(data["body_pos_w"], np.float32)[:, ref_idx]  # (T, 3)
+        root_quat = np.asarray(data["body_quat_w"], np.float32)[:, ref_idx]  # (T, 4) wxyz
+
+        # box pose in the reference torso frame (inference math utils, all wxyz -- same geometry as
+        # the training obj_pos_b/obj_ori_b, which used the xyzw sim convention).
+        rel_pos = quat_rotate_inverse(root_quat, obj_pos - root_pos)  # (T, 3)
+        rel_quat = subtract_frame_transforms(root_quat, obj_quat)  # (T, 4) wxyz
+        rel_mat = matrix_from_quat(rel_quat)  # (T, 3, 3)
+        ori6 = rel_mat[..., :2].reshape(rel_mat.shape[0], -1)  # (T, 6) first two columns
+
+        if prepend > 0:
+            rel_pos = np.concatenate([np.repeat(rel_pos[:1], prepend, axis=0), rel_pos], axis=0)
+            ori6 = np.concatenate([np.repeat(ori6[:1], prepend, axis=0), ori6], axis=0)
+
+        self._obj_pos_b_traj = rel_pos.astype(np.float32)
+        self._obj_ori_b_traj = ori6.astype(np.float32)
+        logger.info(
+            f"Loaded object motion from {npz_path}: {self._obj_pos_b_traj.shape[0]} frames "
+            f"(prepend={prepend}) -> obj_pos_b(3)+obj_ori_b(6) available in actor obs."
+        )
+
+        # Static support table (optional): support_pos_w/support_quat_w are a single world pose
+        # (not per-frame), broadcast across T then expressed in the same moving torso frame as
+        # obj_pos_b/obj_ori_b above -- matches training's support_pos_b/support_ori_b terms.
+        if "support_pos_w" in data:
+            support_pos = np.broadcast_to(np.asarray(data["support_pos_w"], np.float32), obj_pos.shape)
+            support_quat = np.broadcast_to(np.asarray(data["support_quat_w"], np.float32), obj_quat.shape)
+
+            support_rel_pos = quat_rotate_inverse(root_quat, support_pos - root_pos)  # (T, 3)
+            support_rel_quat = subtract_frame_transforms(root_quat, support_quat)  # (T, 4) wxyz
+            support_rel_mat = matrix_from_quat(support_rel_quat)  # (T, 3, 3)
+            support_ori6 = support_rel_mat[..., :2].reshape(support_rel_mat.shape[0], -1)  # (T, 6)
+
+            if prepend > 0:
+                support_rel_pos = np.concatenate(
+                    [np.repeat(support_rel_pos[:1], prepend, axis=0), support_rel_pos], axis=0
+                )
+                support_ori6 = np.concatenate([np.repeat(support_ori6[:1], prepend, axis=0), support_ori6], axis=0)
+
+            self._support_pos_b_traj = support_rel_pos.astype(np.float32)
+            self._support_ori_b_traj = support_ori6.astype(np.float32)
+            logger.info(
+                f"Loaded support table pose from {npz_path} -> support_pos_b(3)+support_ori_b(6) "
+                "available in actor obs."
+            )
 
     def _get_ref_body_orientation_in_world(self, robot_state_data):
         # Create configuration for pinocchio robot
@@ -252,6 +371,48 @@ class WholeBodyTrackingPolicy(BasePolicy):
 
         # actions
         current_obs_buffer_dict["actions"] = self.last_policy_action
+
+        # obj_pos_b / obj_ori_b (object-carry policies). Three sources, in priority order:
+        #  1. zero_object_obs debug override (OOD for object-actor checkpoints -- see TaskConfig);
+        #  2. live_object_obs: the REAL simulated box (run_sim pose stream) relative to the robot's
+        #     REAL torso -- same frames as training's obj_pos_b/obj_ori_b terms, closes the loop;
+        #  3. clip lookup at the current motion timestep (open loop; also the fallback of 2 until
+        #     the first pose message arrives). For real deployment a mocap/RGB-D box pose would
+        #     feed source 2's channel.
+        if self._obj_pos_b_traj is not None or self._object_pose_sub is not None:
+            live_pose = self._object_pose_sub.get_pose() if self._object_pose_sub is not None else None
+            if getattr(self.config.task, "zero_object_obs", False):
+                current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
+                current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
+            elif live_pose is not None:
+                if not self._live_obs_active:
+                    self._live_obs_active = True
+                    logger.info(colored("Live object obs active: box pose now from run_sim stream", "green"))
+                box_pos, box_quat_wxyz, torso_pos, torso_quat_wxyz = live_pose
+                torso_quat_wxyz = torso_quat_wxyz[None, :]
+                rel_pos = quat_rotate_inverse(torso_quat_wxyz, (box_pos - torso_pos)[None, :])
+                rel_quat = subtract_frame_transforms(torso_quat_wxyz, box_quat_wxyz[None, :])
+                rel_ori6 = matrix_from_quat(rel_quat)[..., :2].reshape(1, -1)
+                current_obs_buffer_dict["obj_pos_b"] = rel_pos.astype(np.float32)
+                current_obs_buffer_dict["obj_ori_b"] = rel_ori6.astype(np.float32)
+            elif self._obj_pos_b_traj is not None:
+                idx = int(np.clip(int(round(self.curr_motion_timestep)), 0, self._obj_pos_b_traj.shape[0] - 1))
+                current_obs_buffer_dict["obj_pos_b"] = self._obj_pos_b_traj[idx : idx + 1]
+                current_obs_buffer_dict["obj_ori_b"] = self._obj_ori_b_traj[idx : idx + 1]
+            else:
+                # live mode without clip fallback, before the first message: hold zeros and warn --
+                # transient by construction (run_sim publishes every physics step once up).
+                logger.warning("live_object_obs: no box pose received yet and no clip fallback; sending zeros")
+                current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
+                current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
+
+        # support_pos_b / support_ori_b (support-table-aware policies only, see
+        # wbt_w_object_support obs preset). The table is static in world frame, so unlike the box
+        # there's no live/closed-loop source needed -- clip lookup at the current timestep suffices.
+        if self._support_pos_b_traj is not None:
+            idx = int(np.clip(int(round(self.curr_motion_timestep)), 0, self._support_pos_b_traj.shape[0] - 1))
+            current_obs_buffer_dict["support_pos_b"] = self._support_pos_b_traj[idx : idx + 1]
+            current_obs_buffer_dict["support_ori_b"] = self._support_ori_b_traj[idx : idx + 1]
 
         return current_obs_buffer_dict
 

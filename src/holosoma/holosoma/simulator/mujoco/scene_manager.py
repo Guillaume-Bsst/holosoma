@@ -365,6 +365,53 @@ class MujocoSceneManager:
         # Store prefix for later use by simulator
         self.robot_prefix = prefix
 
+    def add_free_box(self, pos, half_extent: float, mass: float, quat=(1, 0, 0, 0)) -> None:
+        """Spawn a free (physical) rigid box in the world -- object-carry sim-to-sim visualisation.
+
+        A body with its own freejoint + box geom. Purely physical: it falls if not held (the policy
+        does not act on it). The robot is addressed by its named freejoint, so this extra freejoint
+        does not disturb robot state addressing. Gated by SimEngineConfig.add_box in run_sim. `pos`/
+        `quat` (wxyz) and the geom size/mass are normally resolved by object_spawn.resolve_box_spawn
+        from the checkpoint's object URDF + motion clip, not hand-tuned here.
+        """
+        box_body = self.world_spec.worldbody.add_body(name="free_box", pos=list(pos), quat=list(quat))
+        box_body.add_freejoint(name="free_box_joint")
+        box_body.add_geom(
+            name="free_box_geom",
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=[half_extent, half_extent, half_extent],
+            mass=mass,
+            rgba=[0.7, 0.8, 0.9, 1.0],
+            friction=[0.9, 0.01, 0.001],
+        )
+        logger.info(f"Spawned free box at {list(pos)} (half_extent={half_extent} m, mass={mass} kg)")
+
+    def add_static_mesh(self, name: str, vertices, faces, pos, quat) -> None:
+        """Add a STATIC mesh body -- e.g. the clip's real support table for object-carry sim2sim.
+
+        The true mesh is rendered (real shape/orientation); collision uses MuJoCo's convex hull
+        of the mesh, which for a table = the solid table block (top surface exact -- what the box
+        lands on). Environment collision class (contype=2, conaffinity=1) like the terrain, so it
+        collides with both the robot and the free box. NOTE: never merge such a mesh with the
+        floor -- hulling a non-convex floor+table produces phantom ramp collisions.
+        """
+        mesh_spec = self.world_spec.add_mesh(name=f"{name}_mesh")
+        mesh_spec.uservert = vertices.flatten(order="C")
+        mesh_spec.userface = faces.flatten(order="C")
+        mesh_spec.smoothnormal = False
+
+        body = self.world_spec.worldbody.add_body(name=name, pos=list(pos), quat=list(quat))
+        geom = body.add_geom(
+            name=f"{name}_geom",
+            type=mujoco.mjtGeom.mjGEOM_MESH,
+            meshname=mesh_spec.name,
+            rgba=[0.55, 0.42, 0.28, 1.0],
+            friction=[0.9, 0.01, 0.001],
+        )
+        geom.contype = 2
+        geom.conaffinity = 1
+        logger.info(f"Added static mesh '{name}' ({len(vertices)} verts) at {list(pos)}")
+
     def _apply_collision_settings(self, robot_spec: mujoco.MjSpec, robot_config: RobotConfig) -> None:
         """Apply collision settings based on unified self_collisions configuration.
 

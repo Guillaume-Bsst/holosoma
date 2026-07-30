@@ -21,6 +21,7 @@ from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
 from holosoma.simulator.mujoco.backends import WARP_AVAILABLE, ClassicBackend, WarpBackend
 from holosoma.simulator.mujoco.command_registry import CommandRegistry
 from holosoma.simulator.mujoco.fields import prepare_fields, prepare_manager_fields
+from holosoma.simulator.mujoco.object_spawn import resolve_box_spawn, resolve_support_spawn
 from holosoma.simulator.mujoco.scene_manager import MujocoSceneManager
 from holosoma.simulator.mujoco.tensor_views import (
     create_base_linear_acceleration_view,
@@ -400,6 +401,22 @@ class MuJoCo(BaseSimulator):
         self.scene_manager.add_robot(
             terrain_state, self.robot_config, xml_filter=self.simulator_config.robot_mjcf_filter
         )
+
+        # Optional free box for object-carry sim-to-sim visualisation (SimEngineConfig.add_box).
+        # Geometry/mass/pose are resolved from the checkpoint's own object URDF + motion clip when
+        # available (see object_spawn.resolve_box_spawn), falling back to the static sim.box_* config.
+        sim_cfg = self.simulator_config.sim
+        if getattr(sim_cfg, "add_box", False):
+            pos, quat, half_extent, mass = resolve_box_spawn(sim_cfg, self.robot_config)
+            self.scene_manager.add_free_box(pos, half_extent, mass, quat=quat)
+
+        # Optional static support table (SimEngineConfig.add_support): the REAL table mesh the
+        # clip places the box on, anchored relative to the robot like the free box. Usual floor stays.
+        if getattr(sim_cfg, "add_support", False):
+            support = resolve_support_spawn(sim_cfg, self.robot_config)
+            if support is not None:
+                vertices, faces, pos, quat = support
+                self.scene_manager.add_static_mesh("support_table", vertices, faces, pos, quat)
 
     def _set_robot_properties(self) -> None:
         """Set robot properties including DOF names, body names, and index mappings.
@@ -1387,6 +1404,37 @@ class MuJoCo(BaseSimulator):
         """
         assert self.root_data is not None
         return self.root_data.time
+
+    def get_free_box_and_ref_pose(self, ref_body_name: str = "torso_link"):
+        """World poses of the run_sim free box AND the robot ref body, or None if no box.
+
+        Read by SimulatorBridge.step() to publish both REAL simulated poses for closed-loop
+        object observations (inference --task.live-object-obs): the box relative to the torso is
+        exactly what training's obj_pos_b/obj_ori_b observe, and the Unitree low state has no
+        world root position so the torso pose must come from the simulator ground truth.
+        ClassicBackend CPU state only -- sim2sim runs single-env classic.
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None
+            (box_pos (3,), box_quat_wxyz (4,), ref_pos (3,), ref_quat_wxyz (4,)) in world frame,
+            or None when no box was spawned.
+        """
+        if not hasattr(self, "_free_box_body_id"):
+            assert self.root_model is not None
+            self._free_box_body_id = mujoco.mj_name2id(self.root_model, mujoco.mjtObj.mjOBJ_BODY, "free_box")
+            self._ref_body_id_for_pose = mujoco.mj_name2id(
+                self.root_model, mujoco.mjtObj.mjOBJ_BODY, self._get_prefixed_name(ref_body_name)
+            )
+        if self._free_box_body_id == -1 or self._ref_body_id_for_pose == -1:
+            return None
+        assert self.root_data is not None
+        return (
+            self.root_data.xpos[self._free_box_body_id].copy(),
+            self.root_data.xquat[self._free_box_body_id].copy(),  # [w,x,y,z]
+            self.root_data.xpos[self._ref_body_id_for_pose].copy(),
+            self.root_data.xquat[self._ref_body_id_for_pose].copy(),  # [w,x,y,z]
+        )
 
     def get_dof_forces(self, env_id: int = 0) -> torch.Tensor:
         """Get DOF forces for a specific environment.
