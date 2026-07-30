@@ -42,6 +42,17 @@ def run_simulation(config: RunSimConfig):
 
     config = dataclasses.replace(config, device=config.device)
 
+    # Optional: spawn the robot at the clip's frame-0 root pose so a clip-world scene
+    # (terrain:terrain-load-obj floor+table mesh) lines up with robot and box. See
+    # SimEngineConfig.spawn_robot_at_clip_start.
+    sim_cfg = getattr(config.simulator.config, "sim", None)
+    if sim_cfg is not None and getattr(sim_cfg, "spawn_robot_at_clip_start", False):
+        from holosoma.simulator.mujoco.object_spawn import robot_init_state_from_clip  # noqa: PLC0415
+
+        new_robot = robot_init_state_from_clip(sim_cfg, config.robot)
+        if new_robot is not None:
+            config = dataclasses.replace(config, robot=new_robot)
+
     logger.info("Starting Holosoma Direct Simulation...")
     logger.info(f"Robot: {config.robot.asset.robot_type}")
     logger.info(f"Simulator: {config.simulator._target_}")

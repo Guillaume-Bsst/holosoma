@@ -209,6 +209,31 @@ def obj_ori_b(env: WholeBodyTrackingManager) -> torch.Tensor:
     return mat[..., :2].reshape(mat.shape[0], -1)
 
 
+def support_pos_b(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Position de la table (objet statique) dans le repère torse -> le robot SAIT où elle est."""
+    motion_command = _get_motion_command_and_assert_type(env)
+    pos, _ = subtract_frame_transforms(
+        motion_command.robot_ref_pos_w,
+        motion_command.robot_ref_quat_w,
+        motion_command.support_pos_w,
+        motion_command.support_quat_w,
+    )
+    return pos.view(env.num_envs, -1)
+
+
+def support_ori_b(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """Orientation de la table dans le repère torse (2 premières colonnes de la matrice)."""
+    motion_command = _get_motion_command_and_assert_type(env)
+    _, ori = subtract_frame_transforms(
+        motion_command.robot_ref_pos_w,
+        motion_command.robot_ref_quat_w,
+        motion_command.support_pos_w,
+        motion_command.support_quat_w,
+    )
+    mat = quaternion_to_matrix(ori, w_last=True)
+    return mat[..., :2].reshape(mat.shape[0], -1)
+
+
 def obj_lin_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
     motion_command = _get_motion_command_and_assert_type(env)
     unit_quat = torch.tensor([0.0, 0.0, 0.0, 1.0], device=env.device).unsqueeze(0).repeat(env.num_envs, 1)
