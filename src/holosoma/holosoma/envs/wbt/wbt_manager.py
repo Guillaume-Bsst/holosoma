@@ -85,7 +85,10 @@ class WholeBodyTrackingManager(BaseTask):
             # timeout and clip-end both count as success; bad_tracking is the only failure mode
             motion_ended = motion_command.time_steps >= motion_command.motion.time_step_total - 2
             success = resetting & (self.time_out_buf | motion_ended)
-            self.log_dict["motion/success_rate"] = success.float().sum() / resetting.float().sum()
+            success_rate = success.float().sum() / resetting.float().sum()
+            self.log_dict["motion/success_rate"] = success_rate
+            # drive the box-physicality curriculum (no-op unless it is enabled)
+            motion_command.update_physicality_curriculum(float(success_rate))
 
     def reset_all(self):
         # If reset_all is called several times, clear buffer in motion_command
@@ -117,6 +120,15 @@ class WholeBodyTrackingManager(BaseTask):
         """Random pushes the robots. Emulates an impulse by setting a randomized base velocity."""
         if len(env_ids) == 0:
             return
+        # grasp-settle grace: never push an env whose settle window is still open — a random impulse
+        # right as the hand<->object contact equilibrates destroys the reset we just repaired.
+        # (The push is skipped, not deferred; the scheduler resamples the next interval as usual.)
+        motion_command = self.command_manager.get_state("motion_command") if self.command_manager else None
+        settle_counter = getattr(motion_command, "settle_counter", None)
+        if settle_counter is not None:
+            env_ids = env_ids[settle_counter[env_ids] == 0]
+            if len(env_ids) == 0:
+                return
         self.need_to_refresh_envs[env_ids] = True
         max_vel_tensor = self._max_push_vel
         if self.randomization_manager is not None:

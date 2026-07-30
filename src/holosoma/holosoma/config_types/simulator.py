@@ -139,6 +139,59 @@ class SimEngineConfig:
     max_episode_length_s: float = 20.0
     """Maximum episode length in seconds."""
 
+    add_box: bool = False
+    """run_sim only: spawn a free rigid box in the scene (for object-carry sim-to-sim visualisation).
+    Purely physical (falls if not held) -- the policy is not affected by it (holosoma_inference's
+    --task.object-motion-file feeds the policy the box pose from the reference clip instead, see
+    WholeBodyTrackingPolicy._load_object_motion). When --robot.object.object-urdf-path is set (i.e.
+    you're playing back an object-carry checkpoint), geometry/mass are read from that URDF and, if
+    object_motion_file below is also set, the spawn pose is anchored from the clip -- see
+    simulator/mujoco/object_spawn.py. Toggle off to run without any box."""
+
+    box_pos: tuple[float, float, float] = (0.4, 0.0, 0.2)
+    """Fallback initial world position of the spawned box (m), used only when object_motion_file is
+    unset. Default: resting on the ground in front of the robot (z just above half-extent so it
+    settles, not floating). Move it wherever you want to see it."""
+
+    box_half_extent: float = 0.16
+    """Fallback half-side of the spawned cube (m), used only when --robot.object.object-urdf-path is
+    unset (no object URDF to measure the mesh from). Default 0.16 = the 0.32 m box32."""
+
+    box_mass: float = 0.811
+    """Fallback mass of the spawned box (kg), used only when --robot.object.object-urdf-path is unset.
+    Default = the real measured box."""
+
+    object_motion_file: str | None = None
+    """Training clip NPZ used to auto-place the spawned box (same file as holosoma_inference's
+    --task.object-motion-file). The box pose relative to the robot root at
+    object_motion_start_timestep is read from the clip and re-anchored to THIS scene's actual
+    robot.init_state pose, so the box appears where the policy expects it relative to the robot
+    regardless of where the robot happens to stand here. Requires add_box=True; falls back to the
+    static box_pos above (identity orientation) when unset."""
+
+    object_motion_start_timestep: int = 0
+    """Clip frame used for the auto-placement above. Match --task.motion-start-timestep on the
+    inference side so the box lines up with the first frame the policy will actually track."""
+
+    spawn_robot_at_clip_start: bool = False
+    """Spawn the robot at the clip's frame-0 root pose (x, y and yaw from object_motion_file;
+    z, roll, pitch kept from init_state). Only needed when loading a scene in raw clip-world
+    coordinates. NOT needed with add_support below, which re-anchors the table to the robot
+    instead. Avoid loading the full terrain mesh via terrain:terrain-load-obj in MuJoCo: mesh
+    collisions use the CONVEX HULL, so a non-convex floor+table mesh becomes an invisible ramp
+    that shoves the robot around."""
+
+    add_support: bool = False
+    """run_sim only: spawn the clip's support table as a STATIC box in the scene (the surface the
+    clip places the box on at the end). Sized from support_obj_file's bounding box and positioned
+    relative to the robot init pose via the same clip anchoring as the free box -- usual floor,
+    usual robot spawn, table where the policy expects it. Requires object_motion_file."""
+
+    support_obj_file: str | None = None
+    """Support mesh in clip-world coordinates (e.g. holosoma/data/motions/g1_29dof/
+    whole_body_tracking/femto14_support_world.obj). Its AABB gives the table's size and clip
+    position; collision is an exact box geom (see add_support)."""
+
 
 @dataclass(frozen=True)
 class IsaacGymPhysicsConfig:
