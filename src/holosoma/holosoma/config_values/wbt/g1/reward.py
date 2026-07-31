@@ -102,6 +102,15 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
             params={"sigma": 0.3},
             weight=1.0,
         ),
+        # Fine companion to the term above (coarse+fine). The wide sigma=0.3 term gives far-field
+        # guidance during the reach/lift, but is nearly flat near the target (~0.89 at 10 cm) so the
+        # policy stagnates a few cm below the carry height. This narrow sigma=0.12 term restores a
+        # strong gradient over the last few cm without starving the far field (the wide term stays).
+        "object_global_ref_position_error_fine_exp": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:object_global_ref_position_error_exp",
+            params={"sigma": 0.12},
+            weight=1.0,
+        ),
         "object_global_ref_orientation_error_exp": RewardTermCfg(
             func="holosoma.managers.reward.terms.wbt:object_global_ref_orientation_error_exp",
             params={"sigma": 0.4},

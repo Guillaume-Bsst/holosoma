@@ -5,7 +5,7 @@ from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg
 actor_obs_shared = ObsGroupCfg(
     concatenate=True,
     enable_noise=True,
-    history_length=1,
+    history_length=3,
     terms={
         "motion_command": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:motion_command",
@@ -43,7 +43,7 @@ actor_obs_shared = ObsGroupCfg(
 actor_obs_w_object = ObsGroupCfg(
     concatenate=True,
     enable_noise=True,
-    history_length=1,
+    history_length=3,
     terms={
         **actor_obs_shared.terms,
         # Object pose is available at deployment via mocap/RGB-D perception; add measurement-level

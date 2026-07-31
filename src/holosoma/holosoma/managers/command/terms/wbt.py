@@ -1198,9 +1198,14 @@ class MotionCommand(CommandTermBase):
                         # merely relocated. A pure PD also sags a permanent m*g/kp against that
                         # constant load. Both disappear once the weight is fed forward exactly.
                         cur = self._env.simulator.all_root_states[self.object_indices_in_simulator][kin_ids]
-                        force = cfg_gs.force_assist_kp * (ref_pos - cur[:, :3]) + cfg_gs.force_assist_kd * (
-                            ref_lin_vel - cur[:, 7:10]
-                        )
+                        # Damp-to-zero on the velocity term: kp tracks ref_pos, kd is PURE damping of
+                        # the box's own velocity (-cur_vel), NOT feedforward of ref_lin_vel. The
+                        # reference object velocity is a finite-difference of the (FoundationPose)
+                        # object track, so it carries high-frequency jitter (~0.13 m/s/frame p95);
+                        # feeding it through kd injected an oscillating ~kd*jitter force that made the
+                        # box tremble the whole clip. Damping toward zero removes that injection while
+                        # keeping the stabilising damping.
+                        force = cfg_gs.force_assist_kp * (ref_pos - cur[:, :3]) - cfg_gs.force_assist_kd * cur[:, 7:10]
                         rel = quat_mul(ref_quat, quat_inverse(cur[:, 3:7], w_last=True), w_last=True)
                         # NB: le 2e retour de quat_to_angle_axis est déjà le rotation VECTOR (axe*angle)
                         rotvec = quat_to_angle_axis(rel)[1]
