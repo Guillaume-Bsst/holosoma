@@ -1075,6 +1075,75 @@ def randomize_object_rigid_body_mass_startup(
     )
 
 
+def randomize_object_com_startup(
+    env,
+    env_ids: Sequence[int] | torch.Tensor | None = None,
+    *,
+    com_range: dict[str, Sequence[float]],
+    enabled: bool = True,
+    **_,
+) -> None:
+    """Randomize the carried object's centre of mass (additive offset, metres, object-local axes).
+
+    A real carried box has contents: its COM is not at the geometric centre. The offset creates a
+    standing torque about the grasp that the policy has to counteract, which is a first-order effect
+    for a carry task -- and the one piece of object DR that was missing (mass, inertia and friction
+    are already randomized). The robot's own base COM is randomized by
+    ``randomize_base_com_startup``; this is the object-side counterpart.
+
+    Deliberately NOT reusing ``simulator/isaacsim/events.py:randomize_body_com``: that helper reads
+    ``env.default_coms`` and writes ``env.base_com_bias``, both of which are allocated from the
+    ROBOT articulation view (isaacsim.py) -- calling it for the object would mix the two assets'
+    defaults and clobber the robot's recorded bias. This talks to the object's physx view directly.
+
+    IsaacSim only (like the other object randomizers), startup mode: the COM never changes
+    afterwards, so it is drawn once per env and stays for the whole run.
+    """
+    if not enabled:
+        return
+
+    idx = _ensure_env_ids_tensor(env, env_ids)
+    if idx.numel() == 0:
+        return
+
+    simulator = env.simulator
+    if simulator.__class__.__name__ != "IsaacSim":
+        raise RandomizerNotSupportedError(
+            f"randomize_object_com_startup only supports IsaacSim, got {type(simulator).__name__}"
+        )
+
+    env_ids_cpu = idx.to(device="cpu", dtype=torch.long)
+    if env_ids_cpu.numel() == 0:
+        return
+
+    asset = simulator.scene["object"]
+    # Layout depends on the asset kind: a RigidObject view (the box -- a single body) returns
+    # (num_envs, 7) = pos(3) + quat(4), with NO body axis, unlike an Articulation view which
+    # returns (num_envs, num_bodies, 7). Handle both so this also works if the carried object ever
+    # becomes articulated.
+    coms = asset.root_physx_view.get_coms()
+    low = torch.tensor(
+        [com_range.get("x", [0.0, 0.0])[0], com_range.get("y", [0.0, 0.0])[0], com_range.get("z", [0.0, 0.0])[0]],
+        dtype=coms.dtype,
+    )
+    high = torch.tensor(
+        [com_range.get("x", [0.0, 0.0])[1], com_range.get("y", [0.0, 0.0])[1], com_range.get("z", [0.0, 0.0])[1]],
+        dtype=coms.dtype,
+    )
+    n = env_ids_cpu.numel()
+    bias = low + (high - low) * torch.rand(n, 3, dtype=coms.dtype)
+    if coms.dim() == 2:  # RigidObject: (num_envs, 7)
+        coms[env_ids_cpu, :3] += bias
+    else:  # Articulation: (num_envs, num_bodies, 7) -- same offset on every body
+        coms[env_ids_cpu[:, None], :, :3] += bias[:, None, :]
+    asset.root_physx_view.set_coms(coms, env_ids_cpu)
+
+    logger.info(
+        f"[Randomization] Object CoM: x={com_range.get('x', [0, 0])}, "
+        f"y={com_range.get('y', [0, 0])}, z={com_range.get('z', [0, 0])} (operation=add)"
+    )
+
+
 def randomize_object_rigid_body_inertia_startup(
     env,
     env_ids: Sequence[int] | torch.Tensor | None = None,

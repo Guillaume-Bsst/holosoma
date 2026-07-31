@@ -104,7 +104,29 @@ def main() -> None:
         config=TYRO_CONIFG,
     )
 
+    if checkpoint_cfg.physicality_alpha_eval is not None:
+        _apply_physicality_alpha_eval_override(overwritten_tyro_config, checkpoint_cfg.physicality_alpha_eval)
+
     run_eval_with_tyro(overwritten_tyro_config, checkpoint_cfg, saved_cfg, saved_wandb_path, eval_cbs_cfg=eval_cbs_cfg)
+
+
+def _apply_physicality_alpha_eval_override(tyro_config: ExperimentConfig, alpha: float) -> None:
+    """Patch every command term's ``motion_config.grasp_settle.physicality_alpha_init`` in place.
+
+    At this point ``params["motion_config"]`` is still a plain dict (only hydrated into a real
+    ``MotionConfig``/``GraspSettleConfig`` later, inside ``MotionCommand.__init__``), so mutating the
+    dict directly is enough -- see CheckpointConfig.physicality_alpha_eval for why the normal
+    ``--command...`` CLI override can't reach this field for checkpoints saved before it existed.
+    """
+    patched = False
+    for term_cfg in tyro_config.command.setup_terms.values():
+        motion_config = term_cfg.params.get("motion_config")
+        if isinstance(motion_config, dict) and isinstance(motion_config.get("grasp_settle"), dict):
+            motion_config["grasp_settle"]["physicality_alpha_init"] = alpha
+            patched = True
+    if not patched:
+        raise ValueError("--physicality-alpha-eval was set but no command term has a motion_config.grasp_settle dict to patch.")
+    logger.info(f"[eval override] physicality_alpha_init forced to {alpha} for this eval run")
 
 
 if __name__ == "__main__":

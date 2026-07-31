@@ -85,6 +85,16 @@ g1_29dof_wbt_w_object_support = InferenceConfig(
     secondary=_g1_safety_secondary,
 )
 
+# Same as g1_29dof_wbt_w_object_support but actor_obs stacks 3 frames of history (see
+# observation.wbt_w_object_support_h3) -- for checkpoints trained with history_length=3
+# (e.g. run bzwhv8kk). Total actor_obs dim = 516.
+g1_29dof_wbt_w_object_support_h3 = InferenceConfig(
+    robot=_g1_29dof_wbt_robot,
+    observation=observation.wbt_w_object_support_h3,
+    task=task.wbt,
+    secondary=_g1_safety_secondary,
+)
+
 # fmt: off
 g1_27dof_wbt = InferenceConfig(
     robot=replace(
@@ -123,6 +133,7 @@ DEFAULTS = {
     "g1-29dof-wbt": g1_29dof_wbt,
     "g1-29dof-wbt-w-object": g1_29dof_wbt_w_object,
     "g1-29dof-wbt-w-object-support": g1_29dof_wbt_w_object_support,
+    "g1-29dof-wbt-w-object-support-h3": g1_29dof_wbt_w_object_support_h3,
     "g1-27dof-wbt": g1_27dof_wbt,
 }
 

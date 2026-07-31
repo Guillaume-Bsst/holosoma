@@ -88,9 +88,9 @@ class GraspSettleConfig:
     """Nearest hand<->object distance (m) below which a reset frame counts as 'in contact'.
     Above it (object resting on the ground, hands away) the reset is left untouched."""
 
-    box_half_extents: tuple[float, float, float] = (0.16, 0.16, 0.16)
+    box_half_extents: tuple[float, float, float] = (0.18, 0.18, 0.18)
     """Object half-extents (m), box-local axes -- must match the grasped object's URDF/mesh
-    (box32.obj: 0.32m cube). Used by the GPU box SDF/geodesic (utils/box_geometry.py) for the
+    (box36.obj: 0.36m cube). Used by the GPU box SDF/geodesic (utils/box_geometry.py) for the
     surface-contact reward (object_surface_contact_error_exp): the live nearest-surface-point and
     signed distance of the current sim contact are computed against THIS box, then compared to the
     retargeting-pipeline's reference witness/distance (see gvhmr-fp-pipeline/contact_from_retarget.py)."""
@@ -174,6 +174,15 @@ class GraspSettleConfig:
 
     physicality_ema_beta: float = 0.02
     """EMA smoothing for the per-step success signal (higher = more reactive, noisier)."""
+
+    physicality_alpha_init: float = 1.0
+    """Value alpha is (re)initialised to, applied on every init_buffers() call — i.e. at construction
+    AND on every full env reset (see WholeBodyTrackingManager.reset_all()). Default 1.0 preserves the
+    historical fully-kinematic warmup that the curriculum then anneals down during training. Set to
+    0.0 for an EVAL/play run to force the box fully physical/dynamic from the very first step,
+    bypassing the curriculum's slow success-gated descent entirely — e.g.:
+    ``--command.setup-terms.motion-command.params.motion-config.grasp-settle.physicality-alpha-init=0.0``
+    Only takes effect when kinematic_object_during_contact=True (otherwise alpha is never read)."""
 
     # --- force-mode assist: bounded PD wrench instead of the state blend -----------------------
     physicality_force_mode: bool = False

@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from holosoma.config_types.observation import ObsTermCfg
 from holosoma.managers.command.terms.wbt import MotionCommand
+from holosoma.managers.observation.base import ObservationTermBase
+from holosoma.managers.utils import resolve_callable
 from holosoma.utils.rotations import quat_rotate_inverse, quaternion_to_matrix, subtract_frame_transforms
 from holosoma.utils.torch_utils import get_axis_params, to_torch
 
@@ -244,3 +247,142 @@ def obj_lin_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
         unit_quat,
     )
     return vel_b.view(env.num_envs, -1)
+
+
+class PerceptionNoisyPosition(ObservationTermBase):
+    """Wrap a position observation with the CORRELATED errors of a real pose estimator.
+
+    The per-step uniform noise the observation manager already applies (``ObsTermCfg.noise``) models
+    white measurement jitter, and only that. Two reasons it isn't enough for the box pose:
+
+      - It is exactly what a policy can average away -- and ``actor_obs`` now stacks 3 frames, which
+        makes averaging easier still. The errors that actually survive averaging are the correlated
+        ones, and none of them are modelled.
+      - Its magnitude is already far past the measured jitter. The FoundationPose finite-difference
+        velocity jitter measured on these clips is ~0.13 m/s p95, i.e. 0.13 * 0.02 s = ~2.6 mm of
+        per-frame position jitter at the 50 Hz control rate (200 Hz sim / decimation 4) -- against
+        the +-2 cm of uniform noise on ``obj_pos_b``. Widening the white noise further would only
+        add signal the policy learns to ignore.
+
+    So this term adds what a camera-based pipeline really does wrong, in the ACTOR group only (the
+    critic keeps the clean privileged pose -- observation-term instances are per group):
+
+      - ``bias_range``: a per-EPISODE, per-env, per-axis constant offset (m), resampled on reset.
+        Camera extrinsics calibration and the mesh-origin convention of the pose estimator. This is
+        the dominant real error and the one white noise cannot emulate: it does not average out over
+        frames, so the policy has to stay robust to a box that is systematically a couple of cm off
+        for the whole clip rather than trusting the mean.
+      - ``latency_step_range``: a per-EPISODE integer delay (control steps) applied via a ring
+        buffer. FoundationPose runs well below the 50 Hz control rate, so the pose the policy acts
+        on is stale and zero-order held; 0-3 steps is 0-60 ms.
+      - ``dropout_prob`` / ``dropout_max_steps``: per-step probability of FREEZING the reported
+        position for a few steps (the last good value is held). Models tracking loss under
+        occlusion -- which is precisely what happens when the hands close on the box. Off by
+        default: it changes the task, not just the sensor, so it deserves its own A/B.
+
+    Positions only. An additive bias on the 6D rotation representation used by ``obj_ori_b`` would
+    not be a rotation and would break the orthonormality the policy reads, so orientation keeps the
+    plain white noise.
+
+    ``source`` is the import path of the underlying position term to wrap, so the same class serves
+    ``obj_pos_b`` and ``support_pos_b`` (the table is perceived by the same pipeline, and its error
+    is a pure calibration bias since it never moves).
+
+    The whole term is a pass-through when the owning group has ``enable_noise=False``, so eval/play
+    runs get the clean pose from the same switch that already silences the white noise. ``enabled``
+    forces it either way.
+    """
+
+    def __init__(self, cfg: ObsTermCfg, env: WholeBodyTrackingManager):
+        super().__init__(cfg, env)
+        p = cfg.params
+        self._source = resolve_callable(p.get("source", ""), context="observation term")
+        self.bias_range = float(p.get("bias_range", 0.03))
+        lat = p.get("latency_step_range", (0, 3))
+        self.latency_min, self.latency_max = int(lat[0]), int(lat[1])
+        self.dropout_prob = float(p.get("dropout_prob", 0.0))
+        self.dropout_max_steps = int(p.get("dropout_max_steps", 5))
+        # None = follow the owning group's `enable_noise`, so the one conventional switch turns off
+        # ALL observation corruption at eval/play time (the manager's own `_apply_noise` only ever
+        # gated the white noise, and a term cannot see its group). Resolved lazily on first call --
+        # the manager isn't attached to the env yet at construction. True/False forces it.
+        self._enabled_override = p.get("enabled", None)
+        self._enabled: bool | None = None if self._enabled_override is None else bool(self._enabled_override)
+
+        n, dev = env.num_envs, env.device
+        self._bias = torch.zeros(n, 3, device=dev)
+        self._latency = torch.zeros(n, dtype=torch.long, device=dev)
+        # Ring buffer of past (biased) readings, depth latency_max + 1 so index 0 == current step.
+        self._ring = torch.zeros(self.latency_max + 1, n, 3, device=dev)
+        self._ring_head = 0
+        self._freeze_left = torch.zeros(n, dtype=torch.long, device=dev)
+        self._held = torch.zeros(n, 3, device=dev)
+        # Envs whose buffers must be re-primed from the CURRENT reading on the next call. Priming
+        # lazily (rather than inside reset()) keeps this correct whichever order the task calls
+        # observation_manager.reset() and the state write that follows a termination.
+        self._needs_prime = torch.ones(n, dtype=torch.bool, device=dev)
+        self._env_arange = torch.arange(n, device=dev)
+        self.reset(None)
+
+    def reset(self, env_ids: torch.Tensor | None = None) -> None:
+        n, dev = self.env.num_envs, self.env.device
+        idx = torch.arange(n, device=dev) if env_ids is None else env_ids.to(dev)
+        if idx.numel() == 0:
+            return
+        self._bias[idx] = (torch.rand(idx.numel(), 3, device=dev) * 2.0 - 1.0) * self.bias_range
+        if self.latency_max > self.latency_min:
+            self._latency[idx] = torch.randint(
+                self.latency_min, self.latency_max + 1, (idx.numel(),), device=dev
+            )
+        else:
+            self._latency[idx] = self.latency_min
+        self._freeze_left[idx] = 0
+        self._needs_prime[idx] = True
+
+    def _resolve_enabled(self, env: WholeBodyTrackingManager) -> bool:
+        """Follow the owning group's ``enable_noise``, found by identity on our own cfg object."""
+        if self._enabled is not None:
+            return self._enabled
+        self._enabled = True
+        manager = getattr(env, "observation_manager", None)
+        if manager is not None:
+            for group_cfg in manager.cfg.groups.values():
+                if any(t is self.cfg for t in group_cfg.terms.values()):
+                    self._enabled = bool(group_cfg.enable_noise)
+                    break
+        return self._enabled
+
+    def __call__(self, env: WholeBodyTrackingManager, **kwargs) -> torch.Tensor:
+        if not self._resolve_enabled(env):
+            return self._source(env)
+
+        pos = self._source(env) + self._bias
+
+        # Newly reset envs: fill the whole ring with the current reading so the delayed sample is a
+        # real pose from this episode rather than a stale one from the previous clip.
+        if bool(self._needs_prime.any()):
+            prime = self._needs_prime.clone()  # clone: we write into _needs_prime while indexing by it
+            self._ring[:, prime] = pos[prime].unsqueeze(0)
+            self._held[prime] = pos[prime]
+            self._needs_prime[prime] = False
+
+        self._ring_head = (self._ring_head + 1) % self._ring.shape[0]
+        self._ring[self._ring_head] = pos
+        # Read `latency` steps back, wrapping.
+        read_idx = (self._ring_head - self._latency) % self._ring.shape[0]
+        out = self._ring[read_idx, self._env_arange]
+
+        if self.dropout_prob > 0.0:
+            # Start a new freeze only when not already frozen, so dropout_prob is the rate of
+            # dropout EVENTS and the expected outage length stays dropout_max_steps/2.
+            start = (torch.rand(env.num_envs, device=pos.device) < self.dropout_prob) & (self._freeze_left == 0)
+            if bool(start.any()):
+                self._freeze_left[start] = torch.randint(
+                    1, self.dropout_max_steps + 1, (int(start.sum()),), device=pos.device
+                )
+                self._held[start] = out[start]
+            frozen = self._freeze_left > 0
+            out = torch.where(frozen.unsqueeze(-1), self._held, out)
+            self._freeze_left = (self._freeze_left - 1).clamp(min=0)
+
+        return out

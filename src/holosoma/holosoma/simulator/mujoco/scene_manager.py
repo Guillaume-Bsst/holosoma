@@ -382,7 +382,16 @@ class MujocoSceneManager:
             size=[half_extent, half_extent, half_extent],
             mass=mass,
             rgba=[0.7, 0.8, 0.9, 1.0],
-            friction=[0.9, 0.01, 0.001],
+            # sliding friction 0.9 was outside the object friction range trained
+            # (randomize_object_rigid_body_material_startup: static/dynamic in [0.1, 0.6]) --
+            # 0.6 (top of that trained range) gives the grasp the most margin to hold under load.
+            friction=[0.6, 0.01, 0.001],
+            # Match the rigid contact tuning used for terrain (_create_ground_plane/_create_trimesh)
+            # instead of MuJoCo's much softer engine defaults -- otherwise hand<->box contact is
+            # comparatively mushy (slow force buildup, more penetration) right when the full carry
+            # weight lands on it, unlike everything else in the scene.
+            solimp=[0.99, 0.99, 0.01, 0.5, 2],
+            solref=[0.001, 1],
         )
         logger.info(f"Spawned free box at {list(pos)} (half_extent={half_extent} m, mass={mass} kg)")
 
@@ -406,7 +415,10 @@ class MujocoSceneManager:
             type=mujoco.mjtGeom.mjGEOM_MESH,
             meshname=mesh_spec.name,
             rgba=[0.55, 0.42, 0.28, 1.0],
-            friction=[0.9, 0.01, 0.001],
+            # see add_free_box: match the trained object friction range, not an arbitrary high value.
+            friction=[0.35, 0.01, 0.001],
+            solimp=[0.99, 0.99, 0.01, 0.5, 2],
+            solref=[0.001, 1],
         )
         geom.contype = 2
         geom.conaffinity = 1

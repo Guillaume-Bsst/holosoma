@@ -6,6 +6,8 @@ robot types and tasks, converted from the original YAML configurations.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from holosoma_inference.compat import entry_points
 from holosoma_inference.config.config_types.observation import ObservationConfig
 
@@ -280,6 +282,16 @@ wbt_w_object_support = ObservationConfig(
     },
     history_length_dict={
         "actor_obs": 1,
+    },
+)
+
+# Same terms as wbt_w_object_support, but actor_obs stacks 3 frames of history instead of 1 --
+# matches checkpoints trained with observation.groups.actor_obs.history_length=3 (e.g. run
+# bzwhv8kk). Total actor_obs dim = 3 * 172 = 516.
+wbt_w_object_support_h3 = replace(
+    wbt_w_object_support,
+    history_length_dict={
+        "actor_obs": 3,
     },
 )
 
