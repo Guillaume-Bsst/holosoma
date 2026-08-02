@@ -175,33 +175,6 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
             params={"sigma_geodesic": 0.1, "sigma_dist": 0.05},
             weight=0.5,
         ),
-        # "Si ca ne tient pas, tu peux toujours serrer plus fort" -- donne en SHAPING
-        # POTENTIEL (Ng, Harada & Russell 1999) : gamma*Phi(s') - Phi(s) laisse la politique
-        # optimale strictement inchangee quel que soit Phi. C'est donc une intuition (la direction
-        # du progres), jamais une consigne (combien serrer) : contrairement a tous les autres termes
-        # de contact ici, celui-ci ne PEUT pas deplacer l'optimum, donc pas d'attracteur parasite.
-        # Phi porte sur la FORCE de contact aux paumes et non sur la penetration : en contact rigide
-        # serrer plus fort n'enfonce pas la main dans la box (penetration PhysX sub-millimetrique),
-        # donc les distances signees de object_flat_contact_quality_exp saturent des le contact et
-        # sont aveugles a l'effort de prise.
-        # gamma DOIT suivre celui de l'algo (0.99 ici, cf. experiment.py:98) sinon l'invariance
-        # tombe et le terme redevient un reward ordinaire qui deplace l'optimum.
-        "object_grip_force_potential": RewardTermCfg(
-            func="holosoma.managers.reward.terms.wbt:ObjectGripForcePotential",
-            # force_ref 120 N = 2 x 60 N, la consigne du controleur de prise (GripForceCfg
-            # target_force_n) sur les deux mains. Phi couvre donc [0, prise nominale complete].
-            # Historique : 20 N (derive du mu=0.9 de l'URDF), puis 40 (marge sur la DR de friction),
-            # tous deux CALIBRES POUR RIEN -- sur le run 20260730_231235 les forces mesurees
-            # tenaient entre 0.1 et 4 N, donc Phi vivait sur 0.5% de sa plage et le shaping etait
-            # numeriquement mort. Avec le controleur 60 N les forces sont d'un autre ordre.
-            #
-            # NB : avec le grip force actif, la prise n'est plus DECOUVERTE par la policy mais
-            # IMPOSEE par le controleur. Ce terme devient donc largement redondant -- il reste sans
-            # danger (le shaping potentiel ne peut pas deplacer l'optimum) mais son interet est a
-            # reevaluer sur ce run.
-            params={"gamma": 0.99, "force_ref": 120.0},
-            weight=1.0,
-        ),
         # Override du terme herite : un contact est "indesirable" s'il n'est PAS dans le
         # retargeting a cette frame, pas s'il est dans une liste de noms de corps. Le regex seul
         # n'excluait que pieds/chevilles/wrist_yaw ; or en portant un cube de 0.36 m la REFERENCE

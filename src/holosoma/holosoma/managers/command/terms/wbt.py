@@ -1833,6 +1833,12 @@ class MotionCommand(CommandTermBase):
 
             # FORCES DE CONTACT AVEC LA CAISSE, par corps et au total.
             #
+            # PUREMENT INDICATIF -- NE JAMAIS BRANCHER SUR UNE OBS OU UN REWARD.
+            # Ces valeurs viennent d'un capteur de contact du SIMULATEUR, qui n'a pas d'equivalent
+            # sur le robot reel : les lire dans l'observation ou dans un reward imposerait un
+            # capteur d'effort aux mains pour tout deploiement sim2real. Elles servent uniquement
+            # a diagnostiquer le portage dans les courbes.
+            #
             # Lues sur le capteur FILTRE sur l'objet (simulator.contact_forces_object), pas sur
             # net_forces_w : ce dernier somme tous les contacts d'un corps -- sol, table, caisse,
             # auto-collisions -- en un seul vecteur, ce qui rend la lecture impossible. C'est
