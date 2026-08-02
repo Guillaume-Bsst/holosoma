@@ -461,21 +461,33 @@ class IsaacSim(BaseSimulator):
                 for bn in self.robot_config.body_names
                 if any(s in bn for s in ("wrist_yaw", "wrist_pitch", "elbow"))
             ]
-            object_contact_cfg = ContactSensorCfg(
-                prim_path="/World/envs/env_.*/Robot/("
-                + "|".join(self._object_contact_body_names)
-                + ")",
-                history_length=1,
-                update_period=0.005,
-                track_air_time=False,
-                filter_prim_paths_expr=["/World/envs/env_.*/Object"],
-                debug_vis=False,
-            )
-            self.object_contact_sensor = ContactSensor(object_contact_cfg)
-            self.scene.sensors["object_contact"] = self.object_contact_sensor
+            # UN CAPTEUR PAR CORPS, et non un seul couvrant les six.
+            #
+            # PhysX exige que le motif de filtre resolve exactement num_envs x num_corps_senses
+            # prims. Un capteur unique sur 6 corps filtre sur `/World/envs/env_*/Object` attend donc
+            # 4096 x 6 = 24576 prims alors qu'il n'existe qu'une caisse par env :
+            #   [Error] [omni.physx.tensors.plugin] Filter pattern '/World/envs/env_*/Object' did
+            #   not match the correct number of entries (expected 24576, found 4096)
+            # Erreur NON FATALE -- l'entrainement continue et force_matrix_w reste a zero, ce qui
+            # se lit comme "aucun contact" au lieu de "capteur casse". Avec un corps par capteur le
+            # compte retombe a 1:1 par env.
+            self.object_contact_sensors = {}
+            for bn in self._object_contact_body_names:
+                cfg = ContactSensorCfg(
+                    prim_path=f"/World/envs/env_.*/Robot/{bn}",
+                    history_length=1,
+                    update_period=0.005,
+                    track_air_time=False,
+                    filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+                    debug_vis=False,
+                )
+                sensor = ContactSensor(cfg)
+                self.object_contact_sensors[bn] = sensor
+                self.scene.sensors[f"object_contact_{bn}"] = sensor
             logger.info(
-                f"Object contact sensor on {len(self._object_contact_body_names)} bodies "
-                f"{self._object_contact_body_names}, filtered on /World/envs/env_*/Object"
+                f"Object contact sensors : {len(self.object_contact_sensors)} capteurs "
+                f"(1 par corps) {self._object_contact_body_names}, filtres sur "
+                f"/World/envs/env_*/Object"
             )
 
         # add the static support (table) if the clip carries one: fixed-base rigid object, one per
@@ -887,10 +899,16 @@ class IsaacSim(BaseSimulator):
             :, :effective_history_length, self._contact_to_robot_body_ids
         ]  # (num_envs, history_length, num_bodies, 3), the first index is the most recent
 
-        # Force against the box only. force_matrix_w is (num_envs, num_sensed_bodies, num_filters, 3)
-        # -- one filter here (the Object), so squeeze it out.
+        # Force contre la caisse uniquement. Chaque capteur couvre 1 corps et 1 filtre, donc
+        # force_matrix_w est (num_envs, 1, 1, 3) -> on empile les six sur l'axe corps.
         if self._object_contact_body_names:
-            self.contact_forces_object = self.object_contact_sensor.data.force_matrix_w[:, :, 0, :]
+            self.contact_forces_object = torch.stack(
+                [
+                    self.object_contact_sensors[bn].data.force_matrix_w[:, 0, 0, :]
+                    for bn in self._object_contact_body_names
+                ],
+                dim=1,
+            )
 
         self._rigid_body_pos = self._robot.data.body_pos_w[:, self.body_ids, :]
         self._rigid_body_rot = self._robot.data.body_quat_w[:, self.body_ids][
