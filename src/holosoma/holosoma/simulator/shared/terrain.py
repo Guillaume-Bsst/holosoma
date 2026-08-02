@@ -139,11 +139,19 @@ class Terrain(TerrainInterface):
         mesh.vertices[..., :2] -= self._border_size
         return mesh
 
-    def sample_env_origins(self) -> np.ndarray:
+    def get_env_origin_grid(self) -> np.ndarray:
+        """Return the (rows, cols, 3) origin grid for this terrain, regardless of mesh_type.
+
+        ``_env_origins`` is only populated by ``_initialize_terrain_config`` (procedural terrains);
+        ``load_obj`` terrains build their grid lazily via ``_get_load_obj_env_origin_grid`` instead,
+        so callers must go through this method rather than reading ``_env_origins`` directly.
+        """
         if self._type == "load_obj":
-            origin_grid = self._get_load_obj_env_origin_grid()
-        else:
-            origin_grid = self._env_origins
+            return self._get_load_obj_env_origin_grid()
+        return self._env_origins
+
+    def sample_env_origins(self) -> np.ndarray:
+        origin_grid = self.get_env_origin_grid()
 
         terrain_levels = np.random.randint(0, self._num_rows, (self._num_robots,))
         terrain_types = np.floor_divide(

@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from holosoma.config_types.experiment import ExperimentConfig, NightlyConfig, TrainingConfig
+from holosoma.config_values.wbt.g1.action import g1_29dof_joint_pos_grip_force
 from holosoma.config_values import (
     action,
     algo,
@@ -93,7 +94,14 @@ g1_29dof_wbt_fast_sac = ExperimentConfig(
         config=replace(
             algo.fast_sac.config,
             num_learning_iterations=400000,
-            v_max=20.0,
+            # v_max 20 -> 30 : le critic distributionnel a un SUPPORT BORNE, les atomes du haut
+            # saturent si le retour depasse v_max. Somme des poids positifs = 11.5 (corps 5.0 +
+            # objet 6.5) -> 0.23/step a dt=0.02 -> retour actualise max 22.9 a gamma=0.99 sur des
+            # episodes de 10 s. C'est le max theorique (tous les termes a 1.0 en meme temps, ce qui
+            # n'arrive pas), mais la marge etait deja nulle avant (20.9) et on perdrait la
+            # resolution du critic exactement dans le regime haute performance. 501 atomes sur
+            # +-30 laissent 0.12 de resolution.
+            v_max=30.0,
             v_min=-20.0,
             gamma=0.99,  # For motion tracking, high gamma + high num_steps is better
             num_steps=1,
@@ -155,9 +163,18 @@ g1_29dof_wbt_w_object = replace(
             robot.g1_29dof_w_object.asset,
             enable_self_collisions=True,
         ),
+        # box36 (cube 0.36 m, demi-tailles 0.18) et NON largebox.obj. Les rewards de contact
+        # calculent leur SDF contre grasp_settle.box_half_extents = (0.18, 0.18, 0.18) : le mesh
+        # spawne doit correspondre. largebox.obj mesure en realite 0.471 x 0.459 x 0.408
+        # (demi-tailles 0.236 / 0.229 / 0.204), soit ~5 cm de plus par cote. Avec ce mesh, une
+        # prise parfaitement plate lit une distance signee de ~+0.05 m au lieu de 0, donc
+        # object_flat_contact_quality_exp plafonne a exp(-0.05^2/0.03^2) = 0.06 -- le terme est
+        # mort sans aucune faute du robot, et object_surface_contact_error_exp prend le meme biais
+        # sur sa composante profondeur. Les deux URDF ont la meme masse (0.811 kg), le changement
+        # est purement geometrique.
         object=replace(
             robot.g1_29dof_w_object.object,
-            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
+            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_box36.urdf",
         ),
         init_state=replace(robot.g1_29dof_w_object.init_state, pos=[0.0, 0.0, 0.76]),
     ),
@@ -178,7 +195,7 @@ g1_29dof_wbt_fast_sac_w_object = replace(
         asset=replace(robot.g1_29dof_w_object.asset, enable_self_collisions=True),
         object=replace(
             robot.g1_29dof_w_object.object,
-            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
+            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_box36.urdf",
         ),
         init_state=replace(robot.g1_29dof_w_object.init_state, pos=[0.0, 0.0, 0.76]),
     ),
@@ -212,7 +229,7 @@ g1_27dof_wbt_w_object = replace(
         asset=replace(robot.g1_27dof_w_object.asset, enable_self_collisions=True),
         object=replace(
             robot.g1_27dof_w_object.object,
-            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
+            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_box36.urdf",
         ),
         init_state=replace(robot.g1_27dof_w_object.init_state, pos=[0.0, 0.0, 0.76]),
     ),
@@ -243,6 +260,43 @@ g1_29dof_wbt_w_object_actor = replace(
     observation=observation.g1_29dof_wbt_observation_w_object_actor,
 )
 
+# Portage caisse + table avec FORCE DE PRISE REELLE (60 N par main) au lieu du curriculum de
+# physicalite. La caisse est physique des le step 0 ; chaque main la presse a
+# grip_force.target_force_n des que le flag de contact GT du command term est actif (cf.
+# GripForceCfg et JointPositionActionTerm._configure_grip_force).
+#
+# A NE PAS COMBINER avec kinematic-object-during-contact / physicality-curriculum : les deux
+# mecanismes repondent au meme probleme (tenir la caisse) et se neutralisent -- une caisse pilotee
+# cinematiquement n'a rien a se faire serrer. Les defauts de GraspSettleConfig laissent bien les
+# deux a False, donc ce preset se lance SANS aucun flag de curriculum.
+#
+# L'observation est la variante ACTEUR : la policy voit la pose de la caisse ET de la table
+# (obj_pos_b/obj_ori_b + support_pos_b/support_ori_b), en history_length=1 -- impose par le warm
+# start depuis le checkpoint full-loco 3ivghz1e (voir la note en tete de observation.py).
+g1_29dof_wbt_w_object_actor_grip_force = replace(
+    g1_29dof_wbt_w_object_actor,
+    training=replace(
+        g1_29dof_wbt_w_object_actor.training,
+        name="g1_29dof_wbt_w_object_actor_grip_force",
+    ),
+    action=g1_29dof_joint_pos_grip_force,
+    # Clip CABLE lui aussi : le defaut herite est sub3_largebox_003_mj_w_obj.npz, qui n'a ni table
+    # ni contact GT. Celui-ci porte object_* ET support_* complets (support_ref_contact,
+    # support_half_extents), donc support_surface_contact_error_exp est reellement actif.
+    command=command.g1_29dof_wbt_command_w_object_femto14_box36,
+    robot=replace(
+        g1_29dof_wbt_w_object_actor.robot,
+        object=replace(
+            g1_29dof_wbt_w_object_actor.robot.object,
+            # La table est CABLEE ici, pas laissee a un flag CLI. Sans support_urdf_path,
+            # isaacsim.py:453 ne spawne aucun acteur "support" : le clip porte bien la pose de la
+            # table, la policy la voit dans son obs, le reward support_surface_contact la note --
+            # mais elle n'existe pas physiquement et la caisse traverserait au depot.
+            support_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/support_table.urdf",
+        ),
+    ),
+)
+
 g1_27dof_wbt_w_object_actor = replace(
     g1_27dof_wbt_w_object,
     observation=observation.g1_29dof_wbt_observation_w_object_actor,
@@ -256,7 +310,7 @@ g1_27dof_wbt_fast_sac_w_object = replace(
         asset=replace(robot.g1_27dof_w_object.asset, enable_self_collisions=True),
         object=replace(
             robot.g1_27dof_w_object.object,
-            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_largebox.urdf",
+            object_urdf_path="holosoma/data/motions/g1_29dof/whole_body_tracking/objects_box36.urdf",
         ),
         init_state=replace(robot.g1_27dof_w_object.init_state, pos=[0.0, 0.0, 0.76]),
     ),
@@ -275,6 +329,7 @@ __all__ = [
     "g1_29dof_wbt_fast_sac_w_object",
     "g1_29dof_wbt_w_object",
     "g1_29dof_wbt_w_object_actor",
+    "g1_29dof_wbt_w_object_actor_grip_force",
     "g1_27dof_wbt",
     "g1_27dof_wbt_w_object",
     "g1_27dof_wbt_w_object_actor",

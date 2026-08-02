@@ -47,6 +47,18 @@ object_state_dr_at_setup = {
             "mass_distribution_params": [0.0, 0.4],
         },
     ),
+    "randomize_object_com_startup": RandomizationTermCfg(
+        func="holosoma.managers.randomization.terms.locomotion:randomize_object_com_startup",
+        params={
+            # Une vraie caisse a un contenu : son COM n'est pas au centre geometrique. Le decalage
+            # cree un couple permanent autour de la prise que la policy doit compenser -- effet du
+            # premier ordre pour du portage. +-4 cm sur un cube de 0.36 m (demi-cote 0.18) = +-22%
+            # du demi-cote : sensible mais pas absurde pour une caisse mal remplie. Pendant objet du
+            # randomize_base_com_startup du robot.
+            "com_range": {"x": [-0.04, 0.04], "y": [-0.04, 0.04], "z": [-0.04, 0.04]},
+            "enabled": True,
+        },
+    ),
     "randomize_object_rigid_body_inertia_startup": RandomizationTermCfg(
         func="holosoma.managers.randomization.terms.locomotion:randomize_object_rigid_body_inertia_startup",
         params={

@@ -2,10 +2,17 @@
 
 from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
 
+# NOTE: history_length=1 sur l'ACTEUR (et sur le critic). Impose par le WARM START : on repart du
+# checkpoint full-loco 3ivghz1e (wandb guibsst-inria/WholeBodyTracking/3ivghz1e), dont l'acteur a
+# 154 dims d'entree et le critic 286 -- des tenseurs empiles sur 3 frames ne s'y chargeraient pas
+# (PPO.load fait load_state_dict SANS strict=False, cf. agents/ppo/ppo.py:654, donc toute difference
+# de forme est fatale). L'empilement 3 frames reste souhaitable en soi (il donne la derive de la
+# box, que l'obs instantanee ne porte pas) mais il est incompatible avec ce transfert : il faudra
+# repartir de zero pour le retrouver.
 actor_obs_shared = ObsGroupCfg(
     concatenate=True,
     enable_noise=True,
-    history_length=3,
+    history_length=1,
     terms={
         "motion_command": ObsTermCfg(
             func="holosoma.managers.observation.terms.wbt:motion_command",
@@ -43,13 +50,30 @@ actor_obs_shared = ObsGroupCfg(
 actor_obs_w_object = ObsGroupCfg(
     concatenate=True,
     enable_noise=True,
-    history_length=3,
+    history_length=1,  # voir la note la-haut
     terms={
         **actor_obs_shared.terms,
         # Object pose is available at deployment via mocap/RGB-D perception; add measurement-level
         # noise so the policy is robust to that pipeline (~2 cm position, ~0.05 orientation).
+        #
+        # The position goes through PerceptionNoisyPosition, which adds the CORRELATED errors a real
+        # estimator makes on top of that white noise: a per-episode constant bias (calibration /
+        # mesh origin) and a per-episode latency (FoundationPose runs below the 50 Hz control rate).
+        # White noise alone is exactly what the policy averages away -- and actor_obs now stacks 3
+        # frames, which makes averaging easier -- while a constant bias never averages out.
+        # NOTE: the term keeps the name "obj_pos_b" on purpose. Groups are concatenated in
+        # ALPHABETICAL term order (ObservationManager.compute_group), so renaming it would reshuffle
+        # the observation vector and desync every inference preset. Only `func` changes.
         "obj_pos_b": ObsTermCfg(
-            func="holosoma.managers.observation.terms.wbt:obj_pos_b",
+            func="holosoma.managers.observation.terms.wbt:PerceptionNoisyPosition",
+            params={
+                "source": "holosoma.managers.observation.terms.wbt:obj_pos_b",
+                "bias_range": 0.03,
+                "latency_step_range": (0, 3),
+                # Occlusion dropout is OFF: freezing the box pose while the hands close on it
+                # changes the task, not just the sensor. Worth its own A/B, not this run.
+                "dropout_prob": 0.0,
+            },
             scale=1.0,
             noise=0.02,
         ),

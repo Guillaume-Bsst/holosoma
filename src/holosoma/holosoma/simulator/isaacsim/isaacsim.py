@@ -447,6 +447,37 @@ class IsaacSim(BaseSimulator):
             self._object = RigidObject(object_cfg)
             self.scene.rigid_objects[object_name] = self._object
 
+            # Contact sensor FILTERED on the box: `data.force_matrix_w` gives the force between each
+            # sensed body and the Object specifically, unlike `net_forces_w` which sums every
+            # contact a body has (ground, table, self-collision, box) into one unreadable number.
+            # That conflation is exactly what made the earlier grip-force metrics uninterpretable.
+            #
+            # Restricted to the carrying bodies rather than `Robot/.*`: filtered contact pairs are
+            # expensive (num_envs x bodies x filters), so 4096 x 32 x 1 = 131k pairs would be paid
+            # every step for data we don't use. The wrists/elbows are the bodies that can plausibly
+            # bear the box -> 4096 x 6 x 1 = 25k.
+            self._object_contact_body_names = [
+                bn
+                for bn in self.robot_config.body_names
+                if any(s in bn for s in ("wrist_yaw", "wrist_pitch", "elbow"))
+            ]
+            object_contact_cfg = ContactSensorCfg(
+                prim_path="/World/envs/env_.*/Robot/("
+                + "|".join(self._object_contact_body_names)
+                + ")",
+                history_length=1,
+                update_period=0.005,
+                track_air_time=False,
+                filter_prim_paths_expr=["/World/envs/env_.*/Object"],
+                debug_vis=False,
+            )
+            self.object_contact_sensor = ContactSensor(object_contact_cfg)
+            self.scene.sensors["object_contact"] = self.object_contact_sensor
+            logger.info(
+                f"Object contact sensor on {len(self._object_contact_body_names)} bodies "
+                f"{self._object_contact_body_names}, filtered on /World/envs/env_*/Object"
+            )
+
         # add the static support (table) if the clip carries one: fixed-base rigid object, one per
         # env, posed from the clip's support_pos_w/quat_w at reset. Collision-only surface for the
         # box deposit (the box rests ON it) -- not baked into the terrain, so it has a real SDF.
@@ -791,6 +822,15 @@ class IsaacSim(BaseSimulator):
             self.num_envs, self.simulator_config.contact_sensor_history_length, self.num_bodies, 3, device=self.device
         )
 
+        # Per-body force against the BOX only (see the filtered sensor above). Stays all-zero and
+        # `_object_contact_body_names` empty when the scene has no object, so consumers can just
+        # check the name list rather than probing for the attribute.
+        if not hasattr(self, "_object_contact_body_names"):
+            self._object_contact_body_names = []
+        self.contact_forces_object = torch.zeros(
+            self.num_envs, max(len(self._object_contact_body_names), 1), 3, device=self.device
+        )
+
         # Initialize virtual gantry system after object registry setup
         # Initialize virtual gantry using config
         gantry_cfg = self.simulator_config.virtual_gantry
@@ -846,6 +886,11 @@ class IsaacSim(BaseSimulator):
         self.contact_forces_history[:, :effective_history_length, :, :] = self.contact_sensor.data.net_forces_w_history[
             :, :effective_history_length, self._contact_to_robot_body_ids
         ]  # (num_envs, history_length, num_bodies, 3), the first index is the most recent
+
+        # Force against the box only. force_matrix_w is (num_envs, num_sensed_bodies, num_filters, 3)
+        # -- one filter here (the Object), so squeeze it out.
+        if self._object_contact_body_names:
+            self.contact_forces_object = self.object_contact_sensor.data.force_matrix_w[:, :, 0, :]
 
         self._rigid_body_pos = self._robot.data.body_pos_w[:, self.body_ids, :]
         self._rigid_body_rot = self._robot.data.body_quat_w[:, self.body_ids][

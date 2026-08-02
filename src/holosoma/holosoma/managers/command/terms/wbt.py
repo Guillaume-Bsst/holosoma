@@ -491,7 +491,36 @@ class MultiMotionLoader:
         else:
             self._object_ref_witness_local = torch.zeros(0, 3, device=device)
 
+        # Static support (table): NOT supported in multi-clip. Each clip carries its own table pose
+        # as a single fixed transform (not a per-frame field), so concatenating clips has no
+        # meaning -- there is no one table pose for the merged timeline. Defining the fields as
+        # "absent" here is what makes that explicit: MotionCommand.support_pos_w and the support
+        # reward/obs terms all gate on has_support / has_support_contact, so a multi-clip run
+        # silently runs WITHOUT the table instead of crashing on a missing attribute (which is what
+        # happened before: support_pos_w read motion._support_pos_w, which this class never set).
+        # Training the table task multi-clip needs a per-clip support pose plumbed through the
+        # timeline first.
+        self.has_support = False
+        self.has_support_contact = False
+        self._support_pos_w = torch.zeros(3, device=device)
+        self._support_quat_w = torch.tensor([0.0, 0.0, 0.0, 1.0], device=device)
+        self.support_mesh = ""
+        self._support_half_extents = torch.zeros(3, device=device)
+        self._support_ref_contact = torch.zeros(0, dtype=torch.bool, device=device)
+        self._support_ref_contact_dist = torch.zeros(0, device=device)
+        self._support_ref_anchor_idx = torch.zeros(0, dtype=torch.long, device=device)
+        self._support_ref_witness_local = torch.zeros(0, 3, device=device)
+        if any(getattr(ld, "has_support", False) for ld in loaders):
+            logger.warning(
+                "MultiMotionLoader: at least one clip carries a static support (table), but multi-clip "
+                "runs do not support it -- the table will be IGNORED. Train the table task on a single clip."
+            )
+
         logger.info(f"MultiMotionLoader: {self._num_motions} motions, {self.time_step_total} total frames")
+
+    @property
+    def support_half_extents(self) -> torch.Tensor:
+        return self._support_half_extents[:]
 
     @property
     def num_motions(self) -> int:
@@ -1198,13 +1227,13 @@ class MotionCommand(CommandTermBase):
                         # merely relocated. A pure PD also sags a permanent m*g/kp against that
                         # constant load. Both disappear once the weight is fed forward exactly.
                         cur = self._env.simulator.all_root_states[self.object_indices_in_simulator][kin_ids]
-                        # Damp-to-zero on the velocity term: kp tracks ref_pos, kd is PURE damping of
-                        # the box's own velocity (-cur_vel), NOT feedforward of ref_lin_vel. The
-                        # reference object velocity is a finite-difference of the (FoundationPose)
-                        # object track, so it carries high-frequency jitter (~0.13 m/s/frame p95);
-                        # feeding it through kd injected an oscillating ~kd*jitter force that made the
-                        # box tremble the whole clip. Damping toward zero removes that injection while
-                        # keeping the stabilising damping.
+                        # kd en AMORTISSEMENT PUR (-kd*v_courante), PAS un suivi de la vitesse de
+                        # reference (-kd*(v_ref - v)). ref_lin_vel est une difference finie de la
+                        # pose FoundationPose : jitter ~0.13 m/s par frame (p95), qui passe tel quel
+                        # dans le kd et injecte une force oscillante -> la box tremble tout le clip.
+                        # On garde le feedback de POSITION sur la reference (kp, la seule quantite
+                        # lissee) et le kd ne fait plus qu'amortir. Cote orientation le kd_rot etait
+                        # deja un amortissement pur (cf. ligne torque plus bas) : c'est symetrique.
                         force = cfg_gs.force_assist_kp * (ref_pos - cur[:, :3]) - cfg_gs.force_assist_kd * cur[:, 7:10]
                         rel = quat_mul(ref_quat, quat_inverse(cur[:, 3:7], w_last=True), w_last=True)
                         # NB: le 2e retour de quat_to_angle_axis est déjà le rotation VECTOR (axe*angle)
@@ -1243,6 +1272,10 @@ class MotionCommand(CommandTermBase):
                             forces_all[kin_ids] = force
                             torques_all[kin_ids] = torque
                         self._env.simulator.set_object_external_wrench(self.object_name, forces_all, torques_all)
+                        # metrics: what the assist actually applied this step (post-cap, post-alpha,
+                        # gravity feedforward included), averaged over the envs in contact.
+                        self._assist_force_norm = float(torch.norm(force, dim=-1).mean())
+                        self._assist_torque_norm = float(torch.norm(torque, dim=-1).mean())
                         # curriculum signal: fraction of contact envs tracking the object
                         err = torch.norm(ref_pos - cur[:, :3], dim=-1)
                         self._obj_track_success = float((err < cfg_gs.physicality_success_obj_err).float().mean())
@@ -1673,9 +1706,16 @@ class MotionCommand(CommandTermBase):
         self._env_step_counter = 0
 
         # physicality curriculum: box blend factor (1=kinematic, 0=physical), success EMA, cooldown.
-        self._physicality_alpha = 1.0
+        # Read from config (default 1.0) so eval/play runs can force alpha=0 (full dynamics, no
+        # assist) via physicality_alpha_init instead of always restarting fully-kinematic.
+        self._physicality_alpha = self.grasp_settle_cfg.physicality_alpha_init
         self._success_ema = 0.0
         self._steps_since_alpha_change = 0
+        # Metrics d'effort : norme moyenne du wrench d'assist reellement applique (rempli par le
+        # force-mode chaque step) et cache d'indices des corps d'ancrage pour la force de prise.
+        self._assist_force_norm = 0.0
+        self._assist_torque_norm = 0.0
+        self._grip_force_body_indexes: torch.Tensor | None = None
         # force-mode assist: per-step object-tracking success (fraction of ref-contact envs with
         # object pos error < physicality_success_obj_err), fed to the curriculum instead of pure
         # survival (which saturates once object terminations are gated off at low alpha).
@@ -1780,6 +1820,52 @@ class MotionCommand(CommandTermBase):
                 self.metrics["motion/force_assist_fmax_eff"] = torch.full_like(
                     hand_dist, float(self._physicality_alpha * cap)
                 )
+                # Wrench d'assist REELLEMENT applique (norme, moyenne sur les envs en contact) : la
+                # part du portage encore payee par l'assist. Doit tendre vers 0 quand alpha descend
+                # -- s'il reste haut pendant que alpha baisse, c'est la policy qui ne reprend PAS
+                # la charge et le curriculum va se bloquer.
+                self.metrics["motion/assist_force_applied"] = torch.full_like(
+                    hand_dist, float(self._assist_force_norm)
+                )
+                self.metrics["motion/assist_torque_applied"] = torch.full_like(
+                    hand_dist, float(self._assist_torque_norm)
+                )
+
+            # FORCES DE CONTACT AVEC LA CAISSE, par corps et au total.
+            #
+            # Lues sur le capteur FILTRE sur l'objet (simulator.contact_forces_object), pas sur
+            # net_forces_w : ce dernier somme tous les contacts d'un corps -- sol, table, caisse,
+            # auto-collisions -- en un seul vecteur, ce qui rend la lecture impossible. C'est
+            # precisement ce qui avait rendu les metriques de prise du run precedent
+            # ininterpretables (0.2 N plat pendant que la caisse etait manifestement portee).
+            #
+            # Ces forces sont aussi la grandeur que lit Phi dans ObjectGripForcePotential.
+            names = getattr(self._env.simulator, "_object_contact_body_names", [])
+            if names:
+                fo = self._env.simulator.contact_forces_object  # (N, B, 3), B = wrists+elbows
+                mag = torch.norm(fo, dim=-1)  # (N, B)
+                total = mag.sum(dim=-1)
+                self.metrics["motion/box_force_total"] = total
+                for i, bn in enumerate(names):
+                    self.metrics[f"motion/box_force_{bn}"] = mag[:, i]
+                # Mains seules vs bras : distingue une PRISE (paumes) d'un simple appui sur
+                # l'avant-bras, que la somme confondrait.
+                hands = [i for i, bn in enumerate(names) if "wrist_yaw" in bn]
+                if hands:
+                    self.metrics["motion/box_force_hands"] = mag[:, hands].sum(dim=-1)
+                # Restreint aux frames ou la reference porte : hors portage la force est ~0 et
+                # diluerait la moyenne. C'est le gating qui manquait a la version precedente --
+                # mais il reste base sur ref_contact (main pres de la caisse), donc il inclut encore
+                # la prise au sol et le depot sur table, ou le poids est repris par le sol/plateau.
+                self.metrics["motion/box_force_in_contact"] = torch.where(
+                    ref_contact, total, torch.zeros_like(total)
+                )
+                # Fraction du poids de la caisse effectivement passee par les contacts robot.
+                # ~1.0 = le robot porte tout ; <1 = le sol ou la table reprend le reste.
+                if self._object_mass is not None:
+                    weight = self._object_mass * 9.81
+                    self.metrics["motion/object_weight_n"] = weight
+                    self.metrics["motion/box_force_over_weight"] = total / weight.clamp_min(1e-3)
 
         if self.motion_cfg.use_adaptive_timesteps_sampler:
             self.adaptive_timesteps_sampler.get_stats()

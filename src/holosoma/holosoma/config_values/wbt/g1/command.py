@@ -119,6 +119,31 @@ g1_29dof_wbt_command_w_object = replace(
     },
 )
 
+# Clip femto14 box36 + TABLE. Le seul (avec sa variante gaitfix2) a porter les champs de contact
+# table complets -- support_ref_contact / support_ref_witness_local / support_half_extents -- sans
+# lesquels support_surface_contact_error_exp renvoie 0 sur tout le run.
+# Mesures sur ce clip : 327 frames a 50 Hz (6.5 s), caisse de (-0.550, 0.222, 0.180) au sol jusqu'a
+# (-1.592, 0.422, 0.928) sur la table (plateau z=0.750, +0.18 de demi-caisse = 0.930). Jambes dans
+# les bornes et sans discontinuite, mais rasantes : appui 95 % du temps et glissement median
+# 0.020 m/s en appui, contre 88 % / 0.006 m/s pour la variante gaitfix2 -- le robot traine les pieds
+# plus qu'il ne marche. A garder en tete si la locomotion apprise glisse en sim2sim.
+motion_config_w_object_femto14_box36 = replace(
+    motion_config_w_object,
+    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/femto14_box36_w_obj_gtcontact_nobj.npz",
+)
+
+g1_29dof_wbt_command_w_object_femto14_box36 = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_w_object_femto14_box36,
+            },
+        )
+    },
+)
+
 # G1 27-DOF: waist_roll/pitch joints are fixed in the URDF; their bodies (waist_roll_link,
 # torso_link) are preserved as rigid bodies in the sim (collapse_fixed_joints=False).
 # body_names_to_track and body_name_ref are identical to 29-DOF.

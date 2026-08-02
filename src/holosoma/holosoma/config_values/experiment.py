@@ -15,6 +15,7 @@ from holosoma.config_values.wbt.g1.experiment import (
     g1_29dof_wbt_fast_sac_w_object,
     g1_29dof_wbt_w_object,
     g1_29dof_wbt_w_object_actor,
+    g1_29dof_wbt_w_object_actor_grip_force,
 )
 
 DEFAULTS = {
@@ -27,6 +28,7 @@ DEFAULTS = {
     "g1_29dof_wbt": g1_29dof_wbt,
     "g1_29dof_wbt_w_object": g1_29dof_wbt_w_object,
     "g1_29dof_wbt_w_object_actor": g1_29dof_wbt_w_object_actor,
+    "g1_29dof_wbt_w_object_actor_grip_force": g1_29dof_wbt_w_object_actor_grip_force,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac,
     "g1_29dof_wbt_fast_sac_w_object": g1_29dof_wbt_fast_sac_w_object,
     "g1_27dof_wbt": g1_27dof_wbt,

@@ -62,6 +62,18 @@ class CheckpointConfig:
     checkpoint: str | None = None
     """Path to a local checkpoint file, or W&B URI in the format `wandb://<entity>/<project>/<run_id>[/<checkpoint_name>]`."""
 
+    physicality_alpha_eval: float | None = None
+    """Force the box physicality-curriculum alpha to this value for this eval run (1.0=fully
+    kinematic/assisted, 0.0=fully physical/no assist), overriding whatever the checkpoint's saved
+    config has. Parsed independently of the checkpoint's config so it works even for checkpoints
+    saved before this field existed: `--command.setup-terms.<term>.params.motion-config.grasp-settle...`
+    CLI overrides only work for keys already present in the saved yaml, because
+    CommandTermCfg.params is a plain ``dict[str, Any]`` and tyro builds that sub-CLI from the dict's
+    own keys rather than from the GraspSettleConfig dataclass (see MotionCommand.__init__'s
+    "temporary fix for motion_config being a dict" comment) -- so a field added after a checkpoint
+    was trained can never get a flag through that path for old runs. This flag bypasses it by
+    patching the resolved config's raw dict directly in eval_agent.main() before env construction."""
+
 
 def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[ExperimentConfig, str | None]:
     """Load checkpoint configuration from either W&B run or local checkpoint.

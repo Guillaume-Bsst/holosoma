@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from holosoma.managers.action.base import ActionTermBase
+from holosoma.utils.rotations import quat_apply
 
 if TYPE_CHECKING:
-    from holosoma.config_types.action import ActionTermCfg
+    from holosoma.config_types.action import ActionTermCfg, GripForceCfg
 
 
 class JointPositionActionTerm(ActionTermBase):
@@ -75,6 +76,35 @@ class JointPositionActionTerm(ActionTermBase):
         # Action delay queue will be initialized in setup() after randomization manager is ready
         self.action_queue: torch.Tensor | None = None
 
+        # Grip-force control (optional, see GripForceCfg): closed-loop wrist torque bias that
+        # presses each hand into the carried object at a target force, replacing the old
+        # curriculum/assist mechanisms.
+        self._grip_cfg: GripForceCfg | None = self.cfg.params.get("grip_force")
+        self._grip_enabled = bool(self._grip_cfg is not None and self._grip_cfg.enable)
+        if self._grip_enabled:
+            self._configure_grip_force(env)
+
+    def _configure_grip_force(self, env: Any) -> None:
+        cfg = self._grip_cfg
+        assert cfg is not None
+        self._left_wrist_dof_idx = torch.tensor(
+            [env.dof_names.index(n) for n in cfg.left_wrist_joint_names], dtype=torch.long, device=env.device
+        )
+        self._right_wrist_dof_idx = torch.tensor(
+            [env.dof_names.index(n) for n in cfg.right_wrist_joint_names], dtype=torch.long, device=env.device
+        )
+        self._left_chain_body_idx = [env.body_names.index(n) for n in cfg.left_chain_body_names]
+        self._right_chain_body_idx = [env.body_names.index(n) for n in cfg.right_chain_body_names]
+        self._left_wrist_yaw_body_idx = self._left_chain_body_idx[-1]
+        self._right_wrist_yaw_body_idx = self._right_chain_body_idx[-1]
+
+        self._grip_hand_offset_local = torch.tensor(cfg.hand_offset_local, dtype=torch.float32, device=env.device)
+        self._grip_axis_roll = torch.tensor([1.0, 0.0, 0.0], device=env.device)
+        self._grip_axis_pitch = torch.tensor([0.0, 1.0, 0.0], device=env.device)
+        self._grip_axis_yaw = torch.tensor([0.0, 0.0, 1.0], device=env.device)
+
+        self._grip_command_term = None  # resolved in setup(), once all managers exist
+
     def setup(self) -> None:
         """Setup action term after all managers are initialized.
 
@@ -101,6 +131,10 @@ class JointPositionActionTerm(ActionTermBase):
         enabled, rfi_lim = self.env._pending_torque_rfi
         self.configure_torque_rfi(enabled=enabled, rfi_lim=rfi_lim)
         self.env._pending_torque_rfi = (False, 0.0)
+
+        if self._grip_enabled:
+            assert self._grip_cfg is not None
+            self._grip_command_term = self.env.command_manager.get_state(self._grip_cfg.command_term_name)
 
     @property
     def action_dim(self) -> int:
@@ -210,11 +244,99 @@ class JointPositionActionTerm(ActionTermBase):
                 + (torch.rand_like(torques) * 2.0 - 1.0) * self._rfi_lim * self._rfi_lim_scale * self.env.torque_limits
             )
 
+        # Grip-force bias: added to the policy's own wrist torques (not a replacement) so the
+        # clip below still bounds the TOTAL commanded torque against the real actuator limits.
+        if self._grip_enabled:
+            torques = torques + self._compute_grip_force_bias()
+
         # Clip torques if configured
         if self.env.robot_config.control.clip_torques:
             torques = torch.clip(torques, -self.env.torque_limits, self.env.torque_limits)
 
         return torques
+
+    def _compute_grip_force_bias(self) -> torch.Tensor:
+        """Open-loop wrist torque bias pressing each hand into the carried object.
+
+        No force sensor on the real wrist, only current-based torque sensing -- and on a
+        torque-CONTROLLED joint, measured torque just reflects what was commanded, so there is no
+        new information to close a loop on. Instead this commands target_force_n directly whenever
+        the command term's contact flag is active: squeeze_dir = unit(live box center -
+        wrist_yaw_link pos), force_vec = target_force_n * squeeze_dir, mapped to the 3 wrist DOF via
+        the analytic revolute-joint Jacobian transpose (tau = J^T @ F). Once the wrist is actually
+        blocked against the box (quasi-static), the delivered force converges to target_force_n by
+        Newton's third law regardless of the box's mass/friction -- see GripForceCfg docstring.
+        """
+        cfg = self._grip_cfg
+        assert cfg is not None and self._grip_command_term is not None
+        sim = self.env.simulator
+        grip_active: torch.Tensor = self._grip_command_term.grip_active
+        box_pos: torch.Tensor = self._grip_command_term.simulator_object_pos_w
+        target_force_n = min(cfg.target_force_n, cfg.force_command_max_n)
+
+        bias = torch.zeros_like(self.torques)
+        sides = (
+            ("left", self._left_wrist_dof_idx, self._left_chain_body_idx, self._left_wrist_yaw_body_idx),
+            ("right", self._right_wrist_dof_idx, self._right_chain_body_idx, self._right_wrist_yaw_body_idx),
+        )
+        grip_active_f = grip_active.float()
+        n_active = grip_active_f.sum().clamp_min(1.0)
+        self.env.log_dict["grip/contact_active_frac"] = grip_active_f.mean()
+        for side, dof_idx, chain_body_idx, wrist_yaw_idx in sides:
+            jacobian = self._wrist_jacobian(chain_body_idx)
+
+            wrist_pos = sim._rigid_body_pos[:, wrist_yaw_idx]
+            squeeze_dir = box_pos - wrist_pos
+            squeeze_dir = squeeze_dir / squeeze_dir.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+
+            command_force = torch.where(
+                grip_active, torch.full_like(grip_active_f, target_force_n), torch.zeros_like(grip_active_f)
+            )
+
+            force_vec = squeeze_dir * command_force.unsqueeze(-1)  # (E, 3)
+            # tau[e, dof] = sum_axis jacobian[e, axis, dof] * force_vec[e, axis]  (J^T @ F)
+            tau = torch.einsum("eac,ea->ec", jacobian, force_vec)
+            bias[:, dof_idx] += tau
+
+            # Averaged over envs currently gripping only -- diluting by the (usually majority) of
+            # envs not in contact would wash out the signal on wandb.
+            self.env.log_dict[f"grip/command_force_{side}"] = (command_force * grip_active_f).sum() / n_active
+
+        return bias
+
+    def _wrist_jacobian(self, chain_body_idx: list[int]) -> torch.Tensor:
+        """Analytic linear-velocity Jacobian (E, 3, 3) of the hand contact point w.r.t. the 3 wrist
+        DOF (roll, pitch, yaw, in that column order).
+
+        chain_body_idx = [elbow_link, wrist_roll_link, wrist_pitch_link, wrist_yaw_link] indices
+        into env.body_names / env.simulator._rigid_body_pos. Each revolute joint's pivot point is
+        its CHILD link's current world position (translation is invariant to the joint's own
+        rotation), and its world axis is the PARENT link's current world orientation applied to the
+        URDF-local axis (joint origins here have zero rotation, so parent orientation == joint-frame
+        orientation) -- see check_wrist_jacobian.py for a finite-difference validation of this
+        formula against a synthetic copy of this exact kinematic chain.
+        """
+        sim = self.env.simulator
+        elbow_i, roll_i, pitch_i, yaw_i = chain_body_idx
+        p, q = sim._rigid_body_pos, sim._rigid_body_rot
+        p_elbow, q_elbow = p[:, elbow_i], q[:, elbow_i]
+        p_roll, q_roll = p[:, roll_i], q[:, roll_i]
+        p_pitch, q_pitch = p[:, pitch_i], q[:, pitch_i]
+        p_yaw, q_yaw = p[:, yaw_i], q[:, yaw_i]
+
+        n = p_elbow.shape[0]
+        hand_offset = self._grip_hand_offset_local.expand(n, 3)
+        p_hand = p_yaw + quat_apply(q_yaw, hand_offset, w_last=True)
+
+        a_roll = quat_apply(q_elbow, self._grip_axis_roll.expand(n, 3), w_last=True)
+        a_pitch = quat_apply(q_roll, self._grip_axis_pitch.expand(n, 3), w_last=True)
+        a_yaw = quat_apply(q_pitch, self._grip_axis_yaw.expand(n, 3), w_last=True)
+
+        jacobian = torch.zeros(n, 3, 3, device=self.env.device)
+        jacobian[:, :, 0] = torch.cross(a_roll, p_hand - p_roll, dim=-1)
+        jacobian[:, :, 1] = torch.cross(a_pitch, p_hand - p_pitch, dim=-1)
+        jacobian[:, :, 2] = torch.cross(a_yaw, p_hand - p_yaw, dim=-1)
+        return jacobian
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset action term state.
