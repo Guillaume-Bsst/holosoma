@@ -1195,6 +1195,13 @@ class MotionCommand(CommandTermBase):
             obj_quat_ref = self.object_quat_w
             anchor_idx_now, ref_contact = self._lookup_ref_contact(self.time_steps, anchor_pos_ref, obj_pos_ref)
 
+            # Gating de la FORCE DE PRISE (lu par JointPositionActionTerm._compute_grip_force_bias) :
+            # les deux mains serrent des que la reference GT dit que la caisse est portee a cette
+            # frame. Le dataset ne marque que la main la PLUS PROCHE comme ancre de contact (cf.
+            # contact_from_retarget.py), pas un contact independant par main -- c'est donc une
+            # approximation symetrique : les deux mains serrent ensemble sur les frames de portage.
+            self.grip_active = ref_contact
+
             # Kinematic object during contact: box follows the SMOOTH REFERENCE trajectory (pos+quat+
             # vel from the clip) on every ref-contact frame, always on. The grasp is assumed (real hand
             # grips at deployment); the policy learns body motion + hand placement. Bulletproof: no
@@ -1325,6 +1332,9 @@ class MotionCommand(CommandTermBase):
                 )
             # advance the settle window: once the counter hits 0 the clip resumes and the weld releases
             self.settle_counter = torch.clamp(self.settle_counter - 1, min=0)
+        else:
+            # grasp-settle desactive : aucune notion de contact de reference, donc personne ne serre.
+            self.grip_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
@@ -1694,6 +1704,9 @@ class MotionCommand(CommandTermBase):
 
         # grasp-settle state (per env). Populated in reset() for object clips.
         self.settle_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # Gating de la force de prise, lu par l'action term des le PREMIER step -- avant que
+        # post_physics_step ait pu le renseigner. Doit donc exister ici, sinon AttributeError.
+        self.grip_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.settle_anchor_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.settle_grasp_rel_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.settle_grasp_rel_quat = torch.zeros(self.num_envs, 4, device=self.device)
@@ -1790,6 +1803,8 @@ class MotionCommand(CommandTermBase):
             thr = self.grasp_settle_cfg.contact_distance_threshold
             self.metrics["motion/object_hand_dist"] = hand_dist
             self.metrics["motion/object_ref_contact"] = ref_contact.float()
+            # fraction des envs ou les mains serrent effectivement a 60 N ce step
+            self.metrics["motion/grip_active"] = self.grip_active.float()
             self.metrics["motion/object_held"] = ((hand_dist < thr) & ref_contact).float()
             # box tracking vs the reference clip: these are the EXACT quantities the bad_object_pos
             # (>0.25 m) and bad_object_ori (>0.8 rad) terminations threshold, so you can watch the
