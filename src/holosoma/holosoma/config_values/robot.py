@@ -1095,10 +1095,20 @@ g1_29dof_w_object = replace(
     g1_29dof,
     asset=replace(
         g1_29dof.asset,
-        # rubber hand = la vraie main du robot (et celle du XML MuJoCo sim2sim g1_29dof.xml :
-        # entraîner en half-sphere créait un mismatch de géométrie de contact train/test).
-        # flat_contact_offsets(_right) par défaut sont calibrés pour CETTE paume.
-        urdf_file="g1/main_mesh_collision_rubberhand.urdf",
+        # half-sphere hand (choix explicite). Correspond au XML MuJoCo
+        # g1_29dof_halfspherehand.xml (collision = sphere r=0.04 a x=0.056).
+        #
+        # Geometrie : hand_palm_joint a (0.029, -0.003, 0) rpy=(0, 1.57, 0) -> le +z local du mesh
+        # pointe selon +x du poignet, donc face plate a x=0.029 et sommet du dome a x=0.091
+        # (half_sphere.obj : rayon 0.040, dome sur 0.062).
+        #
+        # CONSEQUENCE : flat_contact_offsets doit passer au disque half-sphere (cf.
+        # config_values/wbt/g1/command.py) et grip_force.hand_offset_local a (0.029, -0.003, 0).
+        # Une main spherique ne touche un plan qu'en UN point : les termes
+        # object_flat_contact_quality_* perdent leur sens de "patch plat" et resteront faibles.
+        # L'alternative etait de garder la main rubber (collision = mesh reel, capsule r=0.05 en
+        # MuJoCo via g1_29dof.xml) -- ecartee volontairement.
+        urdf_file="g1/main_mesh_collision_halfspherehand.urdf",
     ),
     control=replace(
         g1_29dof.control,

@@ -19,6 +19,12 @@ grip_force_cfg = GripForceCfg(
     enable=True,
     target_force_n=60.0,
     force_command_max_n=90.0,
+    # Recale sur la main HALF-SPHERE : origine de son hand_palm_joint dans le repere poignet.
+    # Le defaut (0.0415, 0.003, 0) est celui de la main RUBBER -- c'est la valeur qu'utilisait la
+    # run de reference c4k7xrin, qui tournait pourtant en half-sphere : elle appliquait donc sa
+    # force 1.25 cm devant la paume reelle, soit ~25% d'erreur sur le bras de levier du couple
+    # poignet. Corrige ici.
+    hand_offset_local=(0.029, -0.003, 0.0),
 )
 
 g1_29dof_joint_pos_grip_force = replace(

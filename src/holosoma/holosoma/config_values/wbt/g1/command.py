@@ -57,6 +57,26 @@ motion_config = MotionConfig(
 # can be toggled for the hardest clips (or exercised via probe_grasp_settle.py).
 grasp_settle_config = GraspSettleConfig(
     enable=True,
+    # Points de contact recales sur la main HALF-SPHERE (cf. config_values/robot.py). Les defauts
+    # de GraspSettleConfig visent la paume rubber (plan y=-0.009, x de 0.054 a 0.124) : les laisser
+    # placerait les keypoints dans le vide.
+    # Disque de rayon 0.035 dans le plan x=0.029, centre sur l'origine du hand_palm_joint.
+    # RESERVE ASSUMEE : ce plan est la face PLATE du dome, a 0.062 m derriere son sommet (x=0.091)
+    # qui est la surface touchant reellement la caisse. Quand le dome touche, ces keypoints lisent
+    # ~0.062 m -> object_flat_contact_quality_exp (sigma=0.03) vaut exp(-0.062^2/0.03^2) = 0.014,
+    # soit un terme quasi mort ; son compagnon large (sigma=0.10) tient a ~0.68. C'est intrinseque
+    # a une main spherique, qui ne peut pas presenter de patch plat. Valeurs identiques a la run de
+    # reference 60 N c4k7xrin.
+    flat_contact_offsets=[
+        [0.029, -0.003, 0.0],
+        [0.029, 0.032, 0.0],
+        [0.029, -0.038, 0.0],
+        [0.029, -0.003, 0.035],
+        [0.029, -0.003, -0.035],
+    ],
+    # None = memes offsets a gauche et a droite : le half-sphere est symetrique, contrairement aux
+    # mains rubber qui sont des miroirs en y.
+    flat_contact_offsets_right=None,
     contact_distance_threshold=0.35,  # wrist<->box ~0.21-0.28m when carried, ~0.5-0.8m when free
     settle_steps=12,  # ~0.24s at 50Hz
     settle_robot_noise_scale=0.0,  # contact resets spawn exactly at the reference pose
