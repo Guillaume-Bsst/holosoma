@@ -41,10 +41,16 @@ def test_grid_extent_and_count():
 
 
 def test_covers_the_manipulation_scenes():
-    """xy extent of the three manipulation scenes, measured on the committed pivots.
+    """Measurement receipt: xy extent of the three scenes, measured once on 2026-08-03.
 
-    Values recorded on 2026-08-03 (robot root, holov2 pivot) -- if a scene changes, this
-    test must fail before the campaign produces misleading numbers.
+    These numbers are hand-copied from a one-off measurement on the committed `holov2`
+    pivots (robot root) -- this test does NOT re-read the pivot files (the fork must stay
+    self-contained, with no dependency on the external benchmark repo). So it does
+    NOT automatically detect that a scene changed: if the motion of one of the three
+    scenes is regenerated, these literals go stale and must be re-measured by hand. What
+    it really checks is narrower but real: that the climbing grid stays wide enough for
+    the extents recorded here -- it would fail if someone shrank `climbing_ground_range`
+    below these values.
     """
     extents = {                       # (|x|max, |y|max)
         "smallbox047": (0.65, 1.58),
