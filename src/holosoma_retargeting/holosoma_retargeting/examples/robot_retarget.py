@@ -176,6 +176,25 @@ def create_ground_points(x_range: tuple[float, float], y_range: tuple[float, flo
     return np.stack([X.flatten(), Y.flatten(), np.zeros_like(X.flatten())], axis=1)
 
 
+def both_mode_ground_points(task_config) -> np.ndarray | None:
+    """Ground meshgrid for the "Both" mode, or None when the mode is off.
+
+    Both mode is the MULTI-ENTITY case, so it takes the multi-entity grid. climbing is
+    the released task that already concatenates ground with another entity in one mesh,
+    and it uses a wider, coarser grid (64 pts over 4 m) subordinate to the object's 100
+    sampled points -- not robot_only's 225 pts over 2 m, whose values assume the ground
+    is the sole entity and the motion is rebased to the origin. Our object_interaction
+    scenes travel outside (-1, 1)^2: only 31.9% of smallbox047 frames fall inside it.
+    """
+    if not task_config.with_ground:
+        return None
+    return create_ground_points(
+        task_config.climbing_ground_range,
+        task_config.climbing_ground_range,
+        task_config.climbing_ground_size,
+    )
+
+
 def load_motion_data(
     task_type: TaskType,
     data_format: str,
@@ -748,11 +767,10 @@ def main(cfg: RetargetingConfig) -> None:
 
     # "Both" mode: ground meshgrid joins the interaction mesh alongside the object
     ground_points_world = None
-    if task_type == "object_interaction" and cfg.task_config.with_ground:
-        ground_points_world = create_ground_points(
-            cfg.task_config.ground_range, cfg.task_config.ground_range, cfg.task_config.ground_size
-        )
-        logger.info("Both mode: +%d ground points in the interaction mesh", len(ground_points_world))
+    if task_type == "object_interaction":
+        ground_points_world = both_mode_ground_points(cfg.task_config)
+        if ground_points_world is not None:
+            logger.info("Both mode: +%d ground points in the interaction mesh", len(ground_points_world))
 
     # Retarget motion
     logger.info("Starting retargeting...")
