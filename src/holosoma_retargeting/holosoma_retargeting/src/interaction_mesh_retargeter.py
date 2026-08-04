@@ -165,6 +165,11 @@ class InteractionMeshRetargeter:
             self.q_opt_indices = self.q_a_indices
         self.n_opt = len(self.q_opt_indices)
 
+        # Ground points (world-fixed), set per-motion by retarget_motion. None/0 by
+        # default so a run without the ground grid behaves exactly as before.
+        self.ground_points_world = None
+        self.n_ground_pts = 0
+
         # Create complete limits with floating base (-inf, inf) and actuated joint limits
         n_floating_base = 7
         joint_names = [self.robot_model.joint(i).name for i in range(self.robot_model.njnt)]
@@ -419,10 +424,8 @@ class InteractionMeshRetargeter:
         Returns:
             tuple: (retargeted_motions, obj_pts_demo_list, obj_pts_list, tetrahedra)
         """
-        if self.object_variable and ground_points_world is not None:
-            raise NotImplementedError(
-                "object_variable + with_ground: ground vertices in object frame would need "
-                "their own relative Jacobian (not covered, cf. DESIGN 2026-07-29)")
+        self.ground_points_world = ground_points_world
+        self.n_ground_pts = 0 if ground_points_world is None else len(ground_points_world)
 
         num_frames = human_joint_motions.shape[0]
         if q_nominal_list is not None:
@@ -670,6 +673,15 @@ class InteractionMeshRetargeter:
         J_V = np.zeros((3 * V, self.n_opt))
         for i, key in enumerate(robot_link_keys):
             J_V[3 * i : 3 * (i + 1), :] = J_OC_dict[key]
+
+        # GROUND vertices: unlike the object points (constant in the object's own frame, hence
+        # a zero Jacobian), the ground is fixed in the WORLD -- its coordinates in object frame
+        # move with the object pose.
+        if self.object_variable and self.n_ground_pts:
+            g0 = V_r + V_o - self.n_ground_pts        # 1st ground vertex in the entity block
+            for k in range(self.n_ground_pts):
+                J_V[3 * (g0 + k) : 3 * (g0 + k + 1), :] = \
+                    self._calc_ground_vertex_jacobian(self.ground_points_world[k])
 
         robot_pts_local = np.array([p_OC_dict[k] for k in robot_link_keys])
         vertices = np.vstack([robot_pts_local, obj_pts_local])  # (V x 3)
@@ -1456,6 +1468,25 @@ class InteractionMeshRetargeter:
         P_WO = {"position": obj_pos, "rotation": obj_rot} if obj_frame else None
 
         return J_XC_dict, p_XC_dict, P_WO
+
+    def _calc_ground_vertex_jacobian(self, g_world: np.ndarray) -> np.ndarray:
+        """Jacobian of a GROUND point (fixed in the world) expressed in the object frame.
+
+        Degenerate case of the robot branch of _calc_manipulator_jacobians: for a world point,
+        d/dq [R_o^T (g - t_o)] = R_o^T (0 - J_object_fixed_point@g) -- the "point carried by the
+        robot" term is zero, since the ground does not move with the robot. Reduced to
+        q_opt_indices like the robot rows.
+
+        Assumes mj_forward has already been called for the current configuration (like the robot
+        branch, which reads robot_data.xpos).
+        """
+        obj_quat = self.robot_data.qpos[-4:]
+        obj_rot = Rotation.from_quat(
+            [obj_quat[1], obj_quat[2], obj_quat[3], obj_quat[0]]).as_matrix()
+        J = -self._calc_contact_jacobian_from_point(
+            self.object_body_id, np.asarray(g_world, dtype=float), input_world=True)
+        J_XC = obj_rot.T @ J
+        return np.array(J_XC[:, self.q_opt_indices], dtype=float, copy=True)
 
     def _get_robot_link_positions(self, q, link_names):
         """Get robot link positions for given configuration using Mujoco."""
