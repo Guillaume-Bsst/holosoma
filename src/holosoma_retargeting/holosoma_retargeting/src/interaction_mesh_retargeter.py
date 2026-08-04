@@ -683,6 +683,16 @@ class InteractionMeshRetargeter:
                 J_V[3 * (g0 + k) : 3 * (g0 + k + 1), :] = \
                     self._calc_ground_vertex_jacobian(self.ground_points_world[k])
 
+        # The ground vertex VALUES must track the same object pose as the Jacobian above (q, the
+        # current SQP iterate) -- otherwise we linearize around a point that lap0 (below) will
+        # never reflect: a phantom gradient, the same correction re-applied at every iteration
+        # without ever reducing the residual it promises. obj_pts_local (the input, frozen at the
+        # frame anchor pose) is NOT mutated -- we rebind onto a local copy.
+        if self.object_variable and self.n_ground_pts:
+            obj_pts_local = np.array(obj_pts_local, dtype=float, copy=True)
+            obj_pts_local[-self.n_ground_pts:] = transform_points_world_to_local(
+                q[-4:], q[-7:-4], np.asarray(self.ground_points_world, dtype=float))
+
         robot_pts_local = np.array([p_OC_dict[k] for k in robot_link_keys])
         vertices = np.vstack([robot_pts_local, obj_pts_local])  # (V x 3)
 
