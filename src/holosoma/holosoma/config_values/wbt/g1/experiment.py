@@ -1,7 +1,10 @@
 from dataclasses import replace
 
 from holosoma.config_types.experiment import ExperimentConfig, NightlyConfig, TrainingConfig
-from holosoma.config_values.wbt.g1.action import g1_29dof_joint_pos_grip_force
+from holosoma.config_values.wbt.g1.action import (
+    g1_29dof_joint_pos_grip_force,
+    g1_29dof_joint_pos_grip_force_dyn,
+)
 from holosoma.config_values import (
     action,
     algo,
@@ -297,6 +300,41 @@ g1_29dof_wbt_w_object_actor_grip_force = replace(
     ),
 )
 
+# Variante ETAGE 05 du preset ci-dessus : meme tache, meme robot, meme observation, meme warm start
+# -- seule la source d'information change. Le clip est la version enrichie (dyn_* fusionnes depuis
+# le run SPIDER femto14_box36_halfsphere_torquecap, couples dans les limites de l'URDF), et trois
+# choses s'en servent :
+#   1. reward : feet_contact_schedule + feet_slip_on_ref_stance + torque_envelope_penalty, et les
+#      deux rewards de contact main<->caisse deviennent bimanuels (cf. reward.py).
+#   2. action : la force de prise suit le profil mesure par main au lieu du 60 N constant.
+#   3. action : le couple de reference est injecte a 50 % en feed-forward dans la loi PD.
+#
+# L'espace d'observation et le nombre de parametres sont INCHANGES, donc le warm start depuis
+# 3ivghz1e reste utilisable tel quel.
+#
+# Point de vigilance deploiement : (3) suppose que holosoma_inference sache rejouer le meme couple
+# de feed-forward, indexe sur la phase du clip (le low-level Unitree a bien un champ tau). Une
+# policy entrainee avec et deployee sans commandera un couple faux. Tant que ce plumbing n'est pas
+# fait, ce preset est un preset d'ENTRAINEMENT/etude, pas un candidat au deploiement.
+g1_29dof_wbt_w_object_actor_grip_force_dyn = replace(
+    g1_29dof_wbt_w_object_actor_grip_force,
+    training=replace(
+        g1_29dof_wbt_w_object_actor_grip_force.training,
+        name="g1_29dof_wbt_w_object_actor_grip_force_dyn",
+    ),
+    command=command.g1_29dof_wbt_command_w_object_femto14_box36_dyn,
+    action=g1_29dof_joint_pos_grip_force_dyn,
+    reward=reward.g1_29dof_wbt_reward_w_object_dyn,
+    # Seuil objet 0.15 -> 0.45 m : mesure a l'appui dans termination.py. A 350 iterations, 2 morts
+    # sur 3 sont "la caisse a bouge", et l'episode meurt au lieu de laisser la policy rattraper.
+    termination=termination.g1_29dof_wbt_termination_dyn,
+    # Critique enrichi (+17 dims), ACTEUR INCHANGE. Le critique n'etant jamais deploye, tout ce qui
+    # reduit la variance de son estimation de valeur est gratuit cote robot. Detail dans
+    # observation.py -- le gain principal est motion_phase : avec le RSI, le retour atteignable
+    # depend du temps restant dans le clip, que rien ne disait au critique.
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_dyn,
+)
+
 g1_27dof_wbt_w_object_actor = replace(
     g1_27dof_wbt_w_object,
     observation=observation.g1_29dof_wbt_observation_w_object_actor,
@@ -330,6 +368,7 @@ __all__ = [
     "g1_29dof_wbt_w_object",
     "g1_29dof_wbt_w_object_actor",
     "g1_29dof_wbt_w_object_actor_grip_force",
+    "g1_29dof_wbt_w_object_actor_grip_force_dyn",
     "g1_27dof_wbt",
     "g1_27dof_wbt_w_object",
     "g1_27dof_wbt_w_object_actor",

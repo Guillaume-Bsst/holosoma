@@ -232,6 +232,64 @@ class MotionLoader:
                 self._support_ref_contact_dist = torch.zeros(0, device=device)
                 self._support_ref_anchor_idx = torch.zeros(0, dtype=torch.long, device=device)
                 self._support_ref_witness_local = torch.zeros(0, 3, device=device)
+
+            # ---------------------------------------------------------------------------------
+            # Stage-05 dynamics sidecar (SPIDER), folded in by wbt_rl's scripts/merge_dynamics.py.
+            #
+            # These come from replaying the retargeted clip through a real MuJoCo contact solve,
+            # so unlike everything above (which is kinematics + point-cloud geometry) they carry
+            # FORCES: which hand/foot is actually loaded, how hard, and the joint torque the motion
+            # demands. Three independent optional groups, each gated separately -- clips retargeted
+            # before stage 05 existed simply keep their old behaviour.
+            #
+            # IMPORTANT (dyn_tau): the physics solve runs with SPIDER's stock kp=500 actuators,
+            # deliberately far stiffer than the real G1 joints. That is fine BECAUSE kp=500 tracks
+            # the kinematic reference tightly (~0.02 rad mean), so the replayed trajectory is
+            # essentially the reference itself and the recovered torque is a property of the MOTION
+            # (mass matrix + Coriolis + gravity + contact wrench), not of the controller that
+            # produced it. It is therefore usable as a feed-forward / envelope against ANY gains --
+            # but it is NOT a per-joint ground truth for what a real-gain controller commands, so it
+            # is consumed one-sided (see reward torque_envelope_penalty) and scaled (see
+            # TorqueFeedforwardCfg), never as an absolute tracking target.
+            self.has_dyn_tau = "dyn_tau" in data
+            if self.has_dyn_tau:
+                # Same joint axis as joint_pos (both come from the clip's own joint_names order),
+                # so it goes through _joint_indexes exactly like joint_pos -> robot DOF order.
+                self._dyn_tau = torch.tensor(data["dyn_tau"], dtype=torch.float32, device=device)
+                assert self._dyn_tau.shape[1] == self._joint_pos.shape[1], (
+                    f"dyn_tau has {self._dyn_tau.shape[1]} columns but the clip has "
+                    f"{self._joint_pos.shape[1]} joints in {motion_file}"
+                )
+            else:
+                self._dyn_tau = torch.zeros(0, self._joint_pos.shape[1], device=device)
+
+            # Per-hand / per-foot contact, resolved LEFT then RIGHT (column order fixed by
+            # merge_dynamics.py's _SIDES). The hand columns replace the single-anchor contact flag
+            # of object_ref_anchor_idx: the reference genuinely holds the box with BOTH hands on
+            # ~35% of frames, which a one-hot anchor cannot express.
+            self.has_dyn_contact = "dyn_obj_contact_lr" in data and "dyn_foot_contact_lr" in data
+            if self.has_dyn_contact:
+                self._dyn_obj_contact_lr = torch.tensor(
+                    data["dyn_obj_contact_lr"], dtype=torch.bool, device=device
+                )
+                self._dyn_foot_contact_lr = torch.tensor(
+                    data["dyn_foot_contact_lr"], dtype=torch.bool, device=device
+                )
+                self._dyn_foot_grf_lr = torch.tensor(data["dyn_foot_grf_lr"], dtype=torch.float32, device=device)
+            else:
+                self._dyn_obj_contact_lr = torch.zeros(0, 2, dtype=torch.bool, device=device)
+                self._dyn_foot_contact_lr = torch.zeros(0, 2, dtype=torch.bool, device=device)
+                self._dyn_foot_grf_lr = torch.zeros(0, 2, device=device)
+
+            # Measured squeeze force per hand (N), from the hand<->box contact wrench. Replaces the
+            # constant GripForceCfg.target_force_n when GripForceCfg.use_reference_profile is on.
+            self.has_dyn_grip = "dyn_grip_force_lr" in data
+            if self.has_dyn_grip:
+                self._dyn_grip_force_lr = torch.tensor(
+                    data["dyn_grip_force_lr"], dtype=torch.float32, device=device
+                )
+            else:
+                self._dyn_grip_force_lr = torch.zeros(0, 2, device=device)
         return body_names, joint_names
 
     @property
@@ -305,6 +363,27 @@ class MotionLoader:
     @property
     def support_half_extents(self) -> torch.Tensor:
         return self._support_half_extents[:]
+
+    @property
+    def dyn_tau(self) -> torch.Tensor:
+        """(T, num_dof) reference joint torque, reindexed into robot DOF order."""
+        return self._dyn_tau[:, self._joint_indexes]
+
+    @property
+    def dyn_obj_contact_lr(self) -> torch.Tensor:
+        return self._dyn_obj_contact_lr[:]
+
+    @property
+    def dyn_grip_force_lr(self) -> torch.Tensor:
+        return self._dyn_grip_force_lr[:]
+
+    @property
+    def dyn_foot_contact_lr(self) -> torch.Tensor:
+        return self._dyn_foot_contact_lr[:]
+
+    @property
+    def dyn_foot_grf_lr(self) -> torch.Tensor:
+        return self._dyn_foot_grf_lr[:]
 
     @property
     def num_motions(self) -> int:
@@ -396,6 +475,40 @@ class MotionLoader:
                 if prepend
                 else (self._support_ref_witness_local, s_witness),
                 dim=0,
+            )
+
+        # Stage-05 dynamics: the transition is an interpolation to/from the DEFAULT POSE, which was
+        # never physically solved, so there is no measured torque or contact for it. Padding choices:
+        #   dyn_tau      0 N.m   -> no feed-forward during the transition, the PD loop alone drives
+        #                          it (the same regime as before this data existed). Not gravity
+        #                          compensation, but the transition is slow and near the default
+        #                          pose, i.e. the easiest part of the episode.
+        #   feet         True    -> the robot stands on both feet throughout the transition; padding
+        #                          False would instead tell feet_contact_schedule_exp that standing
+        #                          still is wrong and disable the anti-slip gate exactly where the
+        #                          feet must not slide.
+        #   hands / grip False,0 -> the box is not held during the transition.
+        n_seg = segments["joint_pos"].shape[0]
+        if self.has_dyn_tau:
+            pad_tau = torch.zeros(n_seg, self._dyn_tau.shape[1], device=self._dyn_tau.device)
+            self._dyn_tau = torch.cat((pad_tau, self._dyn_tau) if prepend else (self._dyn_tau, pad_tau), dim=0)
+        if self.has_dyn_contact:
+            pad_obj = torch.zeros(n_seg, 2, dtype=torch.bool, device=self._dyn_obj_contact_lr.device)
+            pad_foot = torch.ones(n_seg, 2, dtype=torch.bool, device=self._dyn_foot_contact_lr.device)
+            pad_grf = torch.zeros(n_seg, 2, device=self._dyn_foot_grf_lr.device)
+            self._dyn_obj_contact_lr = torch.cat(
+                (pad_obj, self._dyn_obj_contact_lr) if prepend else (self._dyn_obj_contact_lr, pad_obj), dim=0
+            )
+            self._dyn_foot_contact_lr = torch.cat(
+                (pad_foot, self._dyn_foot_contact_lr) if prepend else (self._dyn_foot_contact_lr, pad_foot), dim=0
+            )
+            self._dyn_foot_grf_lr = torch.cat(
+                (pad_grf, self._dyn_foot_grf_lr) if prepend else (self._dyn_foot_grf_lr, pad_grf), dim=0
+            )
+        if self.has_dyn_grip:
+            pad_grip = torch.zeros(n_seg, 2, device=self._dyn_grip_force_lr.device)
+            self._dyn_grip_force_lr = torch.cat(
+                (pad_grip, self._dyn_grip_force_lr) if prepend else (self._dyn_grip_force_lr, pad_grip), dim=0
             )
 
         self.time_step_total = self._joint_pos.shape[0]
@@ -516,11 +629,56 @@ class MultiMotionLoader:
                 "runs do not support it -- the table will be IGNORED. Train the table task on a single clip."
             )
 
+        # Stage-05 dynamics (see MotionLoader): per-frame fields, so unlike the table they DO
+        # concatenate meaningfully -- but only if every clip carries them, otherwise the merged
+        # timeline would silently feed zero torque / no contact on the clips that lack the sidecar.
+        self.has_dyn_tau = all(ld.has_dyn_tau for ld in loaders)
+        if self.has_dyn_tau:
+            self._dyn_tau = torch.cat([ld._dyn_tau for ld in loaders], dim=0)
+        else:
+            self._dyn_tau = torch.zeros(0, self._joint_pos.shape[1], device=device)
+
+        self.has_dyn_contact = all(ld.has_dyn_contact for ld in loaders)
+        if self.has_dyn_contact:
+            self._dyn_obj_contact_lr = torch.cat([ld._dyn_obj_contact_lr for ld in loaders], dim=0)
+            self._dyn_foot_contact_lr = torch.cat([ld._dyn_foot_contact_lr for ld in loaders], dim=0)
+            self._dyn_foot_grf_lr = torch.cat([ld._dyn_foot_grf_lr for ld in loaders], dim=0)
+        else:
+            self._dyn_obj_contact_lr = torch.zeros(0, 2, dtype=torch.bool, device=device)
+            self._dyn_foot_contact_lr = torch.zeros(0, 2, dtype=torch.bool, device=device)
+            self._dyn_foot_grf_lr = torch.zeros(0, 2, device=device)
+
+        self.has_dyn_grip = all(ld.has_dyn_grip for ld in loaders)
+        if self.has_dyn_grip:
+            self._dyn_grip_force_lr = torch.cat([ld._dyn_grip_force_lr for ld in loaders], dim=0)
+        else:
+            self._dyn_grip_force_lr = torch.zeros(0, 2, device=device)
+
         logger.info(f"MultiMotionLoader: {self._num_motions} motions, {self.time_step_total} total frames")
 
     @property
     def support_half_extents(self) -> torch.Tensor:
         return self._support_half_extents[:]
+
+    @property
+    def dyn_tau(self) -> torch.Tensor:
+        return self._dyn_tau[:, self._joint_indexes]
+
+    @property
+    def dyn_obj_contact_lr(self) -> torch.Tensor:
+        return self._dyn_obj_contact_lr[:]
+
+    @property
+    def dyn_grip_force_lr(self) -> torch.Tensor:
+        return self._dyn_grip_force_lr[:]
+
+    @property
+    def dyn_foot_contact_lr(self) -> torch.Tensor:
+        return self._dyn_foot_contact_lr[:]
+
+    @property
+    def dyn_foot_grf_lr(self) -> torch.Tensor:
+        return self._dyn_foot_grf_lr[:]
 
     @property
     def num_motions(self) -> int:
@@ -642,6 +800,30 @@ class MultiMotionLoader:
                     else (self._object_ref_witness_local, pad_witness),
                     dim=0,
                 )
+
+        # Stage-05 dynamics: same padding rationale as MotionLoader.extend_with_segments
+        # (zero torque, both feet planted, no box in hand during the default-pose transition).
+        if self.has_dyn_tau:
+            pad_tau = torch.zeros(added_frames, self._dyn_tau.shape[1], device=self._dyn_tau.device)
+            self._dyn_tau = torch.cat((pad_tau, self._dyn_tau) if prepend else (self._dyn_tau, pad_tau), dim=0)
+        if self.has_dyn_contact:
+            pad_obj = torch.zeros(added_frames, 2, dtype=torch.bool, device=self._dyn_obj_contact_lr.device)
+            pad_foot = torch.ones(added_frames, 2, dtype=torch.bool, device=self._dyn_foot_contact_lr.device)
+            pad_grf = torch.zeros(added_frames, 2, device=self._dyn_foot_grf_lr.device)
+            self._dyn_obj_contact_lr = torch.cat(
+                (pad_obj, self._dyn_obj_contact_lr) if prepend else (self._dyn_obj_contact_lr, pad_obj), dim=0
+            )
+            self._dyn_foot_contact_lr = torch.cat(
+                (pad_foot, self._dyn_foot_contact_lr) if prepend else (self._dyn_foot_contact_lr, pad_foot), dim=0
+            )
+            self._dyn_foot_grf_lr = torch.cat(
+                (pad_grf, self._dyn_foot_grf_lr) if prepend else (self._dyn_foot_grf_lr, pad_grf), dim=0
+            )
+        if self.has_dyn_grip:
+            pad_grip = torch.zeros(added_frames, 2, device=self._dyn_grip_force_lr.device)
+            self._dyn_grip_force_lr = torch.cat(
+                (pad_grip, self._dyn_grip_force_lr) if prepend else (self._dyn_grip_force_lr, pad_grip), dim=0
+            )
 
         # Update boundaries — shift all motion boundaries if prepending
         if prepend:
@@ -1200,7 +1382,15 @@ class MotionCommand(CommandTermBase):
             # frame. Le dataset ne marque que la main la PLUS PROCHE comme ancre de contact (cf.
             # contact_from_retarget.py), pas un contact independant par main -- c'est donc une
             # approximation symetrique : les deux mains serrent ensemble sur les frames de portage.
-            self.grip_active = ref_contact
+            #
+            # `grip_active_lr` leve cette approximation quand le clip porte la dynamique stage-05 :
+            # le solve MuJoCo mesure un contact PAR MAIN (gauche 38% des frames, droite 38%, les
+            # deux 35% sur femto14_box36), donc chaque main serre selon son propre calendrier au
+            # lieu du OU symetrique. `grip_active` reste le OU des deux mains -- c'est ce que lisent
+            # les metriques et le curriculum de physicalite, dont la semantique ("la caisse est
+            # portee a cette frame") est inchangee.
+            self.grip_active_lr = self.ref_hand_contact_lr()
+            self.grip_active = self.grip_active_lr.any(dim=1) if self.motion.has_dyn_contact else ref_contact
 
             # Kinematic object during contact: box follows the SMOOTH REFERENCE trajectory (pos+quat+
             # vel from the clip) on every ref-contact frame, always on. The grasp is assumed (real hand
@@ -1335,6 +1525,7 @@ class MotionCommand(CommandTermBase):
         else:
             # grasp-settle desactive : aucune notion de contact de reference, donc personne ne serre.
             self.grip_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+            self.grip_active_lr = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
 
         # 1. update body_pos_relative_w and body_quat_relative_w
         # definition of body_pos/quat_relative_w:
@@ -1545,6 +1736,10 @@ class MotionCommand(CommandTermBase):
     def simulator_object_lin_vel_w(self) -> torch.Tensor:
         return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 7:10]
 
+    @property
+    def simulator_object_ang_vel_w(self) -> torch.Tensor:
+        return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 10:13]
+
     #########################################################################################
     ## Support (table) : objet STATIQUE. Pose monde = pose clip + env origin (l'acteur est
     ## planté à cette pose au reset, donc pas besoin de lire son root state -> moins de
@@ -1609,6 +1804,51 @@ class MotionCommand(CommandTermBase):
             return self.motion.object_ref_anchor_idx[time_idx], self.motion.object_ref_contact[time_idx]
         anchor_idx, anchor_dist = select_grasp_anchor(anchor_pos, obj_pos)
         return anchor_idx, anchor_dist < self.grasp_settle_cfg.contact_distance_threshold
+
+    # ------------------------------------------------------------------------------------------
+    # Stage-05 dynamics, sampled at each env's own reference frame (self.time_steps).
+    # ------------------------------------------------------------------------------------------
+
+    @property
+    def dyn_tau(self) -> torch.Tensor:
+        """(num_envs, num_dof) reference joint torque at the current reference frame, robot DOF
+        order. Only valid when ``motion.has_dyn_tau``; callers must check first."""
+        return self.motion.dyn_tau[self.time_steps]
+
+    @property
+    def dyn_obj_contact_lr(self) -> torch.Tensor:
+        """(num_envs, 2) bool -- is the [left, right] hand loaded against the box in the reference."""
+        return self.motion.dyn_obj_contact_lr[self.time_steps]
+
+    @property
+    def dyn_grip_force_lr(self) -> torch.Tensor:
+        """(num_envs, 2) measured reference squeeze force per hand, N."""
+        return self.motion.dyn_grip_force_lr[self.time_steps]
+
+    @property
+    def dyn_foot_contact_lr(self) -> torch.Tensor:
+        """(num_envs, 2) bool -- is the [left, right] foot planted in the reference."""
+        return self.motion.dyn_foot_contact_lr[self.time_steps]
+
+    @property
+    def dyn_foot_grf_lr(self) -> torch.Tensor:
+        """(num_envs, 2) reference ground reaction force magnitude per foot, N."""
+        return self.motion.dyn_foot_grf_lr[self.time_steps]
+
+    def ref_hand_contact_lr(self) -> torch.Tensor:
+        """(num_envs, 2) bool hand<->box contact for [left, right], best source available.
+
+        Prefers the measured stage-05 contact, which is genuinely two-handed (both hands loaded on
+        ~35% of the box-carry frames). Falls back to broadcasting the single-anchor flag of
+        ``_lookup_ref_contact`` into the anchor's own column, so every caller can be written
+        bimanually regardless of which clip is loaded.
+        """
+        if getattr(self.motion, "has_dyn_contact", False):
+            return self.dyn_obj_contact_lr
+        anchor_idx, ref_contact = self._lookup_ref_contact(self.time_steps, self.anchor_pos_w, self.object_pos_w)
+        lr = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
+        lr.scatter_(1, anchor_idx.clamp(0, 1).unsqueeze(1), ref_contact.unsqueeze(1))
+        return lr
 
     @property
     def object_termination_enabled(self) -> bool:
@@ -1707,6 +1947,7 @@ class MotionCommand(CommandTermBase):
         # Gating de la force de prise, lu par l'action term des le PREMIER step -- avant que
         # post_physics_step ait pu le renseigner. Doit donc exister ici, sinon AttributeError.
         self.grip_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.grip_active_lr = torch.zeros(self.num_envs, 2, dtype=torch.bool, device=self.device)
         self.settle_anchor_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.settle_grasp_rel_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.settle_grasp_rel_quat = torch.zeros(self.num_envs, 4, device=self.device)

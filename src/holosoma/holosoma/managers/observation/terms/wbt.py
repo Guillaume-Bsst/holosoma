@@ -386,3 +386,106 @@ class PerceptionNoisyPosition(ObservationTermBase):
             self._freeze_left = (self._freeze_left - 1).clamp(min=0)
 
         return out
+
+
+# ================================================================================================
+# Critic-only privileged observations
+# ================================================================================================
+#
+# The critic is never deployed -- it exists to estimate the value during training -- so anything
+# that reduces the variance of that estimate is free with respect to the real robot. This is the
+# same asymmetry that already gives it base_lin_vel / obj_lin_vel_b / robot_body_pos_b.
+#
+# NONE of these may be added to the actor group: they are either unavailable on hardware (measured
+# contact forces) or would let the policy key on clip position instead of state (phase).
+
+
+def motion_phase(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 2): normalised position in the clip, and normalised frames REMAINING.
+
+    ``motion_command`` gives the reference joint pose at the current frame and nothing else, so
+    neither network is told where in the clip it is. For the actor that is a deliberate choice (a
+    phase-conditioned policy memorises a trajectory instead of tracking it, and recovers badly once
+    it drifts). For the CRITIC it is a straight loss: episodes start at a uniformly random phase
+    (RSI) and end at the clip's end, so the achievable return depends directly on how much clip is
+    left -- two states with an identical robot configuration and different phase have genuinely
+    different values, and the critic currently has to infer the phase by recognising the reference
+    pose, which says nothing about the remaining horizon.
+
+    Both components are normalised per motion, so multi-clip runs stay comparable.
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    start = mc.motion.motion_start_idx[mc.motion_ids]
+    end = mc.motion.motion_end_idx[mc.motion_ids]
+    length = (end - start).clamp_min(1).float()
+    elapsed = (mc.time_steps - start).float()
+    phase = elapsed / length
+    remaining = 1.0 - phase
+    return torch.stack([phase, remaining], dim=-1)
+
+
+def ref_obj_contact_lr(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 2) float: does the REFERENCE hold the box with [left, right] at this frame.
+
+    Tells the critic whether the contact reward terms (3.0 of the 11.0 positive budget) are even
+    reachable here -- the phase-dependent ceiling that reward/achievable measures. Without it the
+    critic must predict a return whose maximum swings with the frame, from inputs that do not
+    contain the swing.
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    if not mc.motion.has_object:
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    return mc.ref_hand_contact_lr().float()
+
+
+def ref_foot_contact_lr(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 2) float: reference stance flags [left, right] (0 without the stage-05 sidecar)."""
+    mc = _get_motion_command_and_assert_type(env)
+    if not getattr(mc.motion, "has_dyn_contact", False):
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    return mc.dyn_foot_contact_lr.float()
+
+
+def ref_grip_force_lr(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 2): reference squeeze force per hand in N (0 without the sidecar).
+
+    Scaled down at the config level -- these reach ~190 N while every other observation is O(1).
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    if not getattr(mc.motion, "has_dyn_grip", False):
+        return torch.zeros(env.num_envs, 2, device=env.device)
+    return mc.dyn_grip_force_lr
+
+
+def measured_contact_forces(
+    env: WholeBodyTrackingManager,
+    body_names: tuple[str, ...] = (
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+    ),
+) -> torch.Tensor:
+    """(num_envs, len(body_names)): magnitude of the net contact force on each named body, in N.
+
+    What the robot is ACTUALLY touching, as opposed to what the reference says it should be. This is
+    the state variable the contact reward terms are computed from, so giving it to the critic closes
+    the loop: it can see the realised contact rather than inferring it from poses. Not available on
+    hardware (no force sensing on the G1 wrists), hence critic-only.
+    """
+    idx = torch.tensor(
+        [env.simulator.body_names.index(n) for n in body_names], dtype=torch.long, device=env.device
+    )
+    return torch.norm(env.simulator.contact_forces[:, idx], dim=-1)
+
+
+def obj_ang_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 3): box angular velocity in the robot reference frame.
+
+    The critic already gets ``obj_lin_vel_b``; omitting the angular half was an asymmetry, and box
+    tumbling is exactly what object_flat_contact_quality_exp is meant to prevent.
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    return quat_rotate_inverse(mc.robot_ref_quat_w, mc.simulator_object_ang_vel_w, w_last=True).view(
+        env.num_envs, -1
+    )

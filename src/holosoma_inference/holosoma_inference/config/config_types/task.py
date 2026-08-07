@@ -146,6 +146,42 @@ class TaskConfig:
     message arrives, so keep --task.object-motion-file set as well. Real-robot deployment would need
     odometry + a mocap/RGB-D box pose feeding the same channel."""
 
+    grip_force_enable: bool = False
+    """Rejoue a l'inference le biais de couple de prise applique a l'entrainement.
+
+    OBLIGATOIRE pour tout checkpoint entraine avec
+    ``--action.terms.joint-control.params.grip-force.enable True`` (preset
+    ``g1-29dof-wbt-w-object-actor-grip-force``). Cette force ne sort PAS du reseau : elle est
+    ajoutee par l'environnement dans ``_compute_torques``, donc l'ONNX n'en contient rien. Sans
+    ce flag, ``cmd_tau`` reste nul et la caisse tombe -- la policy a appris a la porter avec
+    60 N/main qu'aucune couche de l'inference ne fournissait.
+
+    Requiert ``object_motion_file`` (pour la porte de contact GT) et ``grip_force_urdf``."""
+
+    grip_force_urdf: str | None = None
+    """URDF servant a la FK du poignet. Doit etre celui de l'entrainement (robot.asset.urdf_file),
+    sinon la geometrie de la chaine differe et le couple calcule s'ecarte silencieusement."""
+
+    grip_force_target_n: float = 60.0
+    """Force de serrage par main, en newtons. DOIT egaler
+    ``action.terms.joint_control.params.grip_force.target_force_n`` du run d'entrainement.
+
+    PLAFOND PHYSIQUE 82.5 N sur ce clip : au-dela, le pitch du poignet (limite URDF 5 N.m) sature.
+    A 60 N il est deja a 73 % de son budget. Monter la consigne n'apporte donc presque rien et
+    supprime la marge dont le PD a besoin pour asservir le poignet -- la valeur d'entrainement est
+    de fait proche du maximum exploitable."""
+
+    grip_force_gate: str = "clip"
+    """Quand les mains serrent : ``clip`` (flag GT du clip, identique a l'entrainement),
+    ``distance`` (distance main<->caisse mesuree, demande une pose fiable type mocap), ou ``both``.
+
+    ``clip`` serre selon l'horloge du clip : si le robot est en avance ou en retard, il serre au
+    mauvais moment. ``distance`` suit la realite. Avec de la mocap, ``both`` est le compromis sur :
+    il faut que la reference prevoie un portage ET que les mains y soient."""
+
+    grip_force_contact_distance_m: float = 0.35
+    """Seuil du mode ``distance``, aligne sur ``grasp_settle.contact_distance_threshold``."""
+
     debug: DebugConfig = DebugConfig()
     """Debug overrides for quick testing."""
 

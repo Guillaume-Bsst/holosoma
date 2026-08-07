@@ -5,12 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import torch
+from loguru import logger
 
+from holosoma.config_types.action import GripForceCfg, TorqueFeedforwardCfg, TorqueReferenceNoiseCfg
 from holosoma.managers.action.base import ActionTermBase
 from holosoma.utils.rotations import quat_apply
 
 if TYPE_CHECKING:
-    from holosoma.config_types.action import ActionTermCfg, GripForceCfg
+    from holosoma.config_types.action import ActionTermCfg
 
 
 class JointPositionActionTerm(ActionTermBase):
@@ -79,10 +81,68 @@ class JointPositionActionTerm(ActionTermBase):
         # Grip-force control (optional, see GripForceCfg): closed-loop wrist torque bias that
         # presses each hand into the carried object at a target force, replacing the old
         # curriculum/assist mechanisms.
-        self._grip_cfg: GripForceCfg | None = self.cfg.params.get("grip_force")
+        grip_cfg = self.cfg.params.get("grip_force")
+        # TODO(jchen)-style temporary fix for grip_force being a dict after tyro.cli
+        # (same issue as motion_config, see MotionCommand.__init__).
+        if isinstance(grip_cfg, dict):
+            grip_cfg = GripForceCfg(**grip_cfg)
+        self._grip_cfg: GripForceCfg | None = grip_cfg
         self._grip_enabled = bool(self._grip_cfg is not None and self._grip_cfg.enable)
         if self._grip_enabled:
             self._configure_grip_force(env)
+
+        # Stage-05 reference-torque feed-forward (see TorqueFeedforwardCfg). Same tyro-dict
+        # workaround as grip_force above.
+        ff_cfg = self.cfg.params.get("torque_feedforward")
+        if isinstance(ff_cfg, dict):
+            ff_cfg = TorqueFeedforwardCfg(**ff_cfg)
+        self._ff_cfg: TorqueFeedforwardCfg | None = ff_cfg
+        self._ff_enabled = bool(self._ff_cfg is not None and self._ff_cfg.enable)
+        self._ff_command_term = None  # resolved in setup(), once all managers exist
+        self._ff_validated = False  # clip carries dyn_tau: checked once, at first use (see setup)
+        self._ff_dof_mask: torch.Tensor | None = None
+        if self._ff_enabled:
+            assert self._ff_cfg is not None
+            include = self._ff_cfg.joint_names
+            exclude = self._ff_cfg.exclude_joint_names
+            if include is not None or exclude:
+                keep = [
+                    (include is None or any(sel in dof for sel in include))
+                    and not any(sel in dof for sel in exclude)
+                    for dof in env.dof_names
+                ]
+                mask = torch.tensor(keep, dtype=torch.float32, device=env.device)
+                assert mask.any(), (
+                    f"torque_feedforward joint_names={include} / exclude_joint_names={exclude} "
+                    f"left no DOF to feed forward out of {env.dof_names}"
+                )
+                self._ff_dof_mask = mask
+                dropped = [d for d, k in zip(env.dof_names, keep) if not k]
+                logger.info(f"torque_feedforward: active on {int(mask.sum())} DOF, excluding {dropped}")
+
+        # Stage-05 reference-scaled torque noise (see TorqueReferenceNoiseCfg). Same tyro-dict
+        # workaround and same lazy motion resolution as the feed-forward above.
+        tn_cfg = self.cfg.params.get("torque_reference_noise")
+        if isinstance(tn_cfg, dict):
+            tn_cfg = TorqueReferenceNoiseCfg(**tn_cfg)
+        self._tn_cfg: TorqueReferenceNoiseCfg | None = tn_cfg
+        self._tn_enabled = bool(self._tn_cfg is not None and self._tn_cfg.enable)
+        self._tn_command_term = None  # resolved in setup(), once all managers exist
+        self._tn_validated = False  # clip carries dyn_tau: checked once, at first use
+        self._tn_dof_mask: torch.Tensor | None = None
+        if self._tn_enabled:
+            assert self._tn_cfg is not None
+            exclude = self._tn_cfg.exclude_joint_names
+            if exclude:
+                keep = [not any(sel in dof for sel in exclude) for dof in env.dof_names]
+                mask = torch.tensor(keep, dtype=torch.float32, device=env.device)
+                assert mask.any(), (
+                    f"torque_reference_noise exclude_joint_names={exclude} left no DOF "
+                    f"out of {env.dof_names}"
+                )
+                self._tn_dof_mask = mask
+                dropped = [d for d, k in zip(env.dof_names, keep) if not k]
+                logger.info(f"torque_reference_noise: active on {int(mask.sum())} DOF, excluding {dropped}")
 
     def _configure_grip_force(self, env: Any) -> None:
         cfg = self._grip_cfg
@@ -135,6 +195,38 @@ class JointPositionActionTerm(ActionTermBase):
         if self._grip_enabled:
             assert self._grip_cfg is not None
             self._grip_command_term = self.env.command_manager.get_state(self._grip_cfg.command_term_name)
+
+        if self._ff_enabled:
+            assert self._ff_cfg is not None
+            term = self.env.command_manager.get_state(self._ff_cfg.command_term_name)
+            if term is None:
+                logger.warning(
+                    f"torque_feedforward is enabled but command term "
+                    f"'{self._ff_cfg.command_term_name}' does not exist -- disabling it."
+                )
+                self._ff_enabled = False
+            else:
+                # The CLIP cannot be inspected here: base_task.setup() runs action_manager.setup()
+                # before command_manager.setup() (base_task.py:168-170), and MotionCommand only
+                # builds its loader inside its own setup(), so `term.motion` does not exist yet at
+                # this point. Reading it here raised AttributeError and made the whole stage-05
+                # preset unlaunchable. The dyn_tau check is deferred to the first torque
+                # computation, by which time every manager is set up.
+                self._ff_command_term = term
+
+        if self._tn_enabled:
+            assert self._tn_cfg is not None
+            term = self.env.command_manager.get_state(self._tn_cfg.command_term_name)
+            if term is None:
+                logger.warning(
+                    f"torque_reference_noise is enabled but command term "
+                    f"'{self._tn_cfg.command_term_name}' does not exist -- disabling it."
+                )
+                self._tn_enabled = False
+            else:
+                # Same deferred clip inspection as the feed-forward above: the motion is not loaded
+                # yet at action-manager setup time.
+                self._tn_command_term = term
 
     @property
     def action_dim(self) -> int:
@@ -244,16 +336,91 @@ class JointPositionActionTerm(ActionTermBase):
                 + (torch.rand_like(torques) * 2.0 - 1.0) * self._rfi_lim * self._rfi_lim_scale * self.env.torque_limits
             )
 
+        # Reference-scaled torque noise (see TorqueReferenceNoiseCfg). Applied BEFORE the grip bias
+        # and the feed-forward on purpose: those two are deliberate, phase-indexed commands, and
+        # perturbing them would randomise the assist itself rather than the policy's own control.
+        if self._tn_enabled and self._tn_motion_ready():
+            torques = torques + self._compute_torque_reference_noise()
+
         # Grip-force bias: added to the policy's own wrist torques (not a replacement) so the
         # clip below still bounds the TOTAL commanded torque against the real actuator limits.
         if self._grip_enabled:
             torques = torques + self._compute_grip_force_bias()
+
+        # Stage-05 reference-torque feed-forward (see TorqueFeedforwardCfg): the torque the physics
+        # solve says this motion demands at this reference frame, so the PD loop above only has to
+        # produce the correction. Added BEFORE the clip, like the grip bias, so the actuator limits
+        # bound the total command and not just the policy's share of it.
+        if self._ff_enabled and self._ff_motion_ready():
+            torques = torques + self._compute_torque_feedforward()
 
         # Clip torques if configured
         if self.env.robot_config.control.clip_torques:
             torques = torch.clip(torques, -self.env.torque_limits, self.env.torque_limits)
 
         return torques
+
+    def _tn_motion_ready(self) -> bool:
+        """One-shot check that the loaded clip carries ``dyn_tau``. See ``_ff_motion_ready``."""
+        if self._tn_validated:
+            return self._tn_enabled
+        self._tn_validated = True
+        motion = getattr(self._tn_command_term, "motion", None)
+        if motion is None or not getattr(motion, "has_dyn_tau", False):
+            logger.warning(
+                "torque_reference_noise is enabled but the loaded motion carries no dyn_tau "
+                "(run wbt_rl's scripts/merge_dynamics.py on the clip first) -- disabling it."
+            )
+            self._tn_enabled = False
+        return self._tn_enabled
+
+    def _compute_torque_reference_noise(self) -> torch.Tensor:
+        """``U(-1,1) * (ref_scale * |tau_ref| + floor_scale * tau_limit)``, in robot DOF order."""
+        cfg = self._tn_cfg
+        assert cfg is not None and self._tn_command_term is not None
+        amp = cfg.ref_scale * self._tn_command_term.dyn_tau.abs() + cfg.floor_scale * self.env.torque_limits
+        if self._tn_dof_mask is not None:
+            amp = amp * self._tn_dof_mask
+        noise = (torch.rand_like(amp) * 2.0 - 1.0) * amp
+        self.env.log_dict["torque_noise/abs_mean"] = noise.abs().mean()
+        self.env.log_dict["torque_noise/amp_max"] = amp.max()
+        return noise
+
+    def _ff_motion_ready(self) -> bool:
+        """One-shot check that the loaded clip actually carries ``dyn_tau``.
+
+        Deferred out of ``setup()`` on purpose -- see the note there: the motion is not loaded yet
+        when this term is set up, so this is the earliest point where the clip can be inspected.
+        """
+        if self._ff_validated:
+            return self._ff_enabled
+        self._ff_validated = True
+        motion = getattr(self._ff_command_term, "motion", None)
+        if motion is None or not getattr(motion, "has_dyn_tau", False):
+            # Not fatal: the same experiment config is used to replay clips that predate the
+            # stage-05 pipeline. Disable rather than crash, but say so loudly -- a run that silently
+            # trains WITHOUT the feed-forward it was configured for is not comparable to one that
+            # trains with it.
+            logger.warning(
+                "torque_feedforward is enabled but the loaded motion carries no dyn_tau "
+                "(run wbt_rl's scripts/merge_dynamics.py on the clip first) -- disabling it."
+            )
+            self._ff_enabled = False
+        return self._ff_enabled
+
+    def _compute_torque_feedforward(self) -> torch.Tensor:
+        """``scale * dyn_tau`` at each env's current reference frame, in robot DOF order."""
+        cfg = self._ff_cfg
+        assert cfg is not None and self._ff_command_term is not None
+        tau_ref = self._ff_command_term.dyn_tau * cfg.scale  # (E, num_dof)
+        if self._ff_dof_mask is not None:
+            tau_ref = tau_ref * self._ff_dof_mask
+        self.env.log_dict["torque_ff/abs_mean"] = tau_ref.abs().mean()
+        self.env.log_dict["torque_ff/abs_max"] = tau_ref.abs().max()
+        # How much of the actuator budget the feed-forward alone eats: if this approaches 1 the clip
+        # is saturating on the feed-forward and the policy has no authority left to correct with.
+        self.env.log_dict["torque_ff/limit_frac"] = (tau_ref.abs() / self.env.torque_limits).max()
+        return tau_ref
 
     def _compute_grip_force_bias(self) -> torch.Tensor:
         """Open-loop wrist torque bias pressing each hand into the carried object.
@@ -270,37 +437,62 @@ class JointPositionActionTerm(ActionTermBase):
         cfg = self._grip_cfg
         assert cfg is not None and self._grip_command_term is not None
         sim = self.env.simulator
-        grip_active: torch.Tensor = self._grip_command_term.grip_active
-        box_pos: torch.Tensor = self._grip_command_term.simulator_object_pos_w
+        mc = self._grip_command_term
+        box_pos: torch.Tensor = mc.simulator_object_pos_w
         target_force_n = min(cfg.target_force_n, cfg.force_command_max_n)
+
+        # Per-hand gate and per-hand target when the clip carries the stage-05 dynamics: each hand
+        # squeezes on its own schedule, at the force the physics solve actually measured on it (see
+        # GripForceCfg.use_reference_profile). Otherwise both hands share the single reference
+        # contact flag and the one constant target, exactly as before.
+        use_profile = cfg.use_reference_profile and getattr(mc.motion, "has_dyn_grip", False)
+        grip_active_lr: torch.Tensor = mc.grip_active_lr  # (E, 2) left, right
+        force_lr = (
+            mc.dyn_grip_force_lr.clamp(max=cfg.force_command_max_n)
+            if use_profile
+            else torch.full_like(grip_active_lr, target_force_n, dtype=torch.float32)
+        )
 
         bias = torch.zeros_like(self.torques)
         sides = (
             ("left", self._left_wrist_dof_idx, self._left_chain_body_idx, self._left_wrist_yaw_body_idx),
             ("right", self._right_wrist_dof_idx, self._right_chain_body_idx, self._right_wrist_yaw_body_idx),
         )
-        grip_active_f = grip_active.float()
-        n_active = grip_active_f.sum().clamp_min(1.0)
-        self.env.log_dict["grip/contact_active_frac"] = grip_active_f.mean()
-        for side, dof_idx, chain_body_idx, wrist_yaw_idx in sides:
+        self.env.log_dict["grip/contact_active_frac"] = grip_active_lr.any(dim=1).float().mean()
+        # grip_active is scripted from the reference clip's GT contact flag -- it says nothing
+        # about whether THIS env's hand is actually near the box. Without a live-distance gate,
+        # the full target_force_n bias fires on the wrist DOF alone the instant grip_active flips,
+        # regardless of how far the hand is (wrist rotation can't close a 0.5 m gap), which just
+        # injects a disruptive torque during the approach instead of a squeeze once genuinely
+        # close. Ramp it in over [engage_dist, 2*engage_dist] using the same contact-distance
+        # threshold grasp_settle already uses to define "close enough to count as contact".
+        engage_dist = self._grip_command_term.grasp_settle_cfg.contact_distance_threshold
+
+        for k, (side, dof_idx, chain_body_idx, wrist_yaw_idx) in enumerate(sides):
             jacobian = self._wrist_jacobian(chain_body_idx)
 
             wrist_pos = sim._rigid_body_pos[:, wrist_yaw_idx]
-            squeeze_dir = box_pos - wrist_pos
-            squeeze_dir = squeeze_dir / squeeze_dir.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+            to_box = box_pos - wrist_pos
+            dist = to_box.norm(dim=-1)
+            squeeze_dir = to_box / dist.clamp_min(1e-6).unsqueeze(-1)
 
-            command_force = torch.where(
-                grip_active, torch.full_like(grip_active_f, target_force_n), torch.zeros_like(grip_active_f)
-            )
+            proximity_gate = (1.0 - (dist - engage_dist) / engage_dist).clamp(0.0, 1.0)
+
+            active = grip_active_lr[:, k]
+            active_f = active.float()
+            command_force = torch.where(active, force_lr[:, k], torch.zeros_like(active_f)) * proximity_gate
 
             force_vec = squeeze_dir * command_force.unsqueeze(-1)  # (E, 3)
             # tau[e, dof] = sum_axis jacobian[e, axis, dof] * force_vec[e, axis]  (J^T @ F)
             tau = torch.einsum("eac,ea->ec", jacobian, force_vec)
             bias[:, dof_idx] += tau
 
-            # Averaged over envs currently gripping only -- diluting by the (usually majority) of
-            # envs not in contact would wash out the signal on wandb.
-            self.env.log_dict[f"grip/command_force_{side}"] = (command_force * grip_active_f).sum() / n_active
+            # Averaged over the envs where THIS hand is currently gripping -- diluting by the
+            # (usually majority) of envs not in contact would wash out the signal on wandb.
+            self.env.log_dict[f"grip/command_force_{side}"] = (
+                command_force * active_f
+            ).sum() / active_f.sum().clamp_min(1.0)
+            self.env.log_dict[f"grip/active_frac_{side}"] = active_f.mean()
 
         return bias
 

@@ -111,6 +111,42 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 "inference:g1-29dof-wbt-w-object (no support terms) instead."
             )
 
+        # Biais de couple de prise (60 N/main a l'entrainement). Voir policies/grip_force.py pour
+        # le detail : cette force est ajoutee par l'ENVIRONNEMENT a l'entrainement, jamais par le
+        # reseau, donc elle doit etre reconstruite ici ou la caisse tombe.
+        self._grip_force = None
+        self._last_obj_pos_b = None
+        if getattr(config.task, "grip_force_enable", False):
+            from holosoma_inference.policies.grip_force import (  # noqa: PLC0415 -- optionnel
+                GripForceBias,
+                GripForceParams,
+            )
+
+            urdf = getattr(config.task, "grip_force_urdf", None)
+            if not urdf:
+                raise ValueError(
+                    "--task.grip-force-enable exige --task.grip-force-urdf (l'URDF du run "
+                    "d'entrainement). Sans FK du poignet, le couple de prise est incalculable."
+                )
+            if not getattr(config.task, "object_motion_file", None):
+                raise ValueError(
+                    "--task.grip-force-enable exige --task.object-motion-file : le flag de contact "
+                    "GT (object_ref_contact) sert de porte a la force. Sans lui elle serait "
+                    "appliquee en continu, y compris pendant l'approche et apres le depot."
+                )
+            self._grip_force = GripForceBias(
+                urdf,
+                tuple(self.robot_config.dof_names),
+                GripForceParams(
+                    target_force_n=float(config.task.grip_force_target_n),
+                    gate=str(getattr(config.task, "grip_force_gate", "clip")),
+                    contact_distance_m=float(getattr(config.task, "grip_force_contact_distance_m", 0.35)),
+                ),
+            )
+            self._grip_force.load_contact_flags(
+                config.task.object_motion_file, config.task.motion_prepend_timesteps
+            )
+
         # Load stiff startup parameters from robot config
         if config.robot.stiff_startup_pos is not None:
             self._stiff_hold_q = np.array(config.robot.stiff_startup_pos, dtype=np.float32).reshape(1, -1)
@@ -219,6 +255,27 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 f"Loaded support table pose from {npz_path} -> support_pos_b(3)+support_ori_b(6) "
                 "available in actor obs."
             )
+
+    def _update_feedforward_torque(self, robot_state_data, policy_active: bool) -> None:
+        """Rejoue le biais de couple de prise dans ``cmd_tau``.
+
+        Pendant a l'inference de ``JointPositionActionTerm._compute_grip_force_bias``. Valide
+        contre la formule d'entrainement sur le clip femto14_box36 : 0.54 % d'ecart median sur le
+        couple, 1.42 % au pire, et zero exact sur les 162 frames hors contact.
+        """
+        if self._grip_force is None:
+            super()._update_feedforward_torque(robot_state_data, policy_active)
+            return
+        if not policy_active or self._last_obj_pos_b is None:
+            self.cmd_tau[:] = 0.0
+            return
+
+        joint_pos = np.asarray(robot_state_data[0, 7 : 7 + self.num_dofs], dtype=float)
+        self.cmd_tau[:] = self._grip_force.compute(
+            joint_pos,
+            np.asarray(self._last_obj_pos_b, dtype=float).reshape(3),
+            self.curr_motion_timestep,
+        )
 
     def _get_ref_body_orientation_in_world(self, robot_state_data):
         # Create configuration for pinocchio robot
@@ -405,6 +462,11 @@ class WholeBodyTrackingPolicy(BasePolicy):
                 logger.warning("live_object_obs: no box pose received yet and no clip fallback; sending zeros")
                 current_obs_buffer_dict["obj_pos_b"] = np.zeros((1, 3), dtype=np.float32)
                 current_obs_buffer_dict["obj_ori_b"] = np.zeros((1, 6), dtype=np.float32)
+
+        # Le biais de prise consomme la MEME pose de caisse que l'observation, quelle que soit la
+        # source retenue ci-dessus (live, clip ou zeros). C'est l'invariant qui garantit que ce que
+        # la policy voit et ce que la force fait ne peuvent pas diverger.
+        self._last_obj_pos_b = current_obs_buffer_dict.get("obj_pos_b")
 
         # support_pos_b / support_ori_b (support-table-aware policies only, see
         # wbt_w_object_support obs preset). The table is static in world frame, so unlike the box

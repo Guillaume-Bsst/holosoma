@@ -41,12 +41,16 @@ class RewardManager:
         self._term_instances: dict[str, RewardTermBase] = {}
         self._term_names: list[str] = []
         self._term_cfgs: list[RewardTermCfg] = []
+        self._term_gates: dict[str, Any] = {}
 
         # Initialize terms
         self._initialize_terms()
 
         # Buffers for reward tracking
         self._reward_buf = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        # Ceiling the positive terms could have reached this step, given which of them are
+        # structurally zero at the current reference frame (see RewardTermCfg.achievable_gate).
+        self._achievable_buf = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         # Episode sums for each term (for logging)
         self._episode_sums: dict[str, torch.Tensor] = {}
@@ -73,6 +77,13 @@ class RewardManager:
             else:
                 # Stateless function
                 self._term_funcs[term_name] = func
+
+            # Achievable-reward gate (diagnostic only, never affects the reward). Resolved through
+            # the same "module:function" mechanism as the term itself, so the manager needs no
+            # task-specific knowledge -- WBT gates live next to the WBT terms.
+            self._term_gates[term_name] = (
+                self._resolve_function(term_cfg.achievable_gate) if term_cfg.achievable_gate else None
+            )
 
             self._term_names.append(term_name)
             self._term_cfgs.append(term_cfg)
@@ -147,6 +158,7 @@ class RewardManager:
         """
         # Reset computation
         self._reward_buf[:] = 0.0
+        self._achievable_buf[:] = 0.0
 
         # Iterate over all reward terms
         for term_name, term_cfg in zip(self._term_names, self._term_cfgs):
@@ -177,9 +189,24 @@ class RewardManager:
             self._episode_sums[term_name] += rew_scaled
             self._episode_sums_raw[term_name] += rew_raw
 
+            # Ceiling of what this term could have paid here. Only positive terms count: a penalty's
+            # best case is 0, so it adds nothing to the reachable budget. Every positive term in use
+            # is an exp(.) bounded by 1, hence weight * 1 * gate.
+            if term_cfg.weight > 0.0:
+                gate = self._term_gates.get(term_name)
+                mask = gate(self.env) if gate is not None else 1.0
+                self._achievable_buf += term_cfg.weight * dt * mask
+
         # Optionally clip to positive
         if self.cfg.only_positive_rewards:
             self._reward_buf[:] = torch.clip(self._reward_buf, min=0.0)
+
+        # Diagnostic only. `achieved_frac` is the number to read instead of the raw reward when
+        # comparing across clip phases: the raw scalar rises simply by reaching richer frames.
+        log_dict = getattr(self.env, "log_dict", None)
+        if log_dict is not None:
+            log_dict["reward/achievable"] = self._achievable_buf.mean()
+            log_dict["reward/achieved_frac"] = (self._reward_buf / self._achievable_buf.clamp_min(1e-6)).mean()
 
         return self._reward_buf
 

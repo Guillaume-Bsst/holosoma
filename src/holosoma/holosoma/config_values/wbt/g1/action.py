@@ -2,7 +2,7 @@
 
 from dataclasses import replace
 
-from holosoma.config_types.action import GripForceCfg
+from holosoma.config_types.action import GripForceCfg, TorqueFeedforwardCfg, TorqueReferenceNoiseCfg
 from holosoma.config_values.loco.g1.action import g1_29dof_joint_pos
 
 # Object-carry training with real physical grip force instead of the box-physicality curriculum
@@ -38,4 +38,62 @@ g1_29dof_joint_pos_grip_force = replace(
     },
 )
 
-__all__ = ["g1_29dof_joint_pos_grip_force"]
+# Variante etage-05 : la prise suit le PROFIL de force mesure par le solve physique (par main, par
+# frame) au lieu du 60 N constant, et le couple de reference est injecte en feed-forward dans la loi
+# PD (cf. TorqueFeedforwardCfg).
+#
+# Les deux retombent silencieusement sur le comportement ci-dessus si le clip charge ne porte pas
+# les champs dyn_* (has_dyn_grip / has_dyn_tau) -- le feed-forward log un warning en se desactivant.
+grip_force_cfg_profile = replace(grip_force_cfg, use_reference_profile=True)
+
+# scale=0.5 : la moitie du couple de reference suffit a retirer l'essentiel de la charge de
+# compensation de gravite tout en laissant a la boucle PD l'autorite de contredire le
+# feed-forward -- le couple de reference est exact pour l'ETAT de reference, et la policy n'y est
+# jamais exactement.
+#
+# Poignets EXCLUS (cf. TorqueFeedforwardCfg.exclude_joint_names) : sur ce clip, wrist_pitch et
+# wrist_yaw sont colles a leur limite de 5 N.m sur 41-50 % des frames. La valeur enregistree y est
+# donc la butee du cap de couple, pas la demande du mouvement -- la feed-forwarder reviendrait a
+# commander un biais permanent a mi-butee que la policy devrait combattre. Les autres DOF saturent
+# 0.9-16 % du temps, ce qui reste un signal exploitable.
+torque_ff_cfg = TorqueFeedforwardCfg(
+    enable=True,
+    scale=0.5,
+    exclude_joint_names=("wrist_pitch", "wrist_yaw"),
+)
+
+# Bruit de couple proportionnel au couple DEMANDE plutot qu'a la butee de l'actionneur (cf.
+# TorqueReferenceNoiseCfg). Le RFI existant (actuator_randomizer_state) est desactive
+# (enable_rfi_lim: false) et perturbe de toute facon une fraction fixe de la LIMITE de chaque joint,
+# identique a chaque frame -- ce qui donne un bruit negligeable sous charge et dominant a vide.
+#
+# ref_scale=0.15 : +/-15 % du couple demande. floor_scale=0.01 : plancher a 1 % de la butee, pour
+# que l'exploration ne disparaisse pas la ou tau_ref ~ 0 (jambe en vol), ou un bruit purement
+# proportionnel s'annulerait exactement la ou la policy a le plus de latitude.
+#
+# Poignets exclus pour la meme raison que le feed-forward, PLUS une propre au bruit : colles a leur
+# butee ~50 % du clip, le clip_torques final rogne toute excursion positive, donc le "bruit" y
+# devient un biais unilateral vers le bas -- pire que pas de randomisation du tout.
+torque_noise_cfg = TorqueReferenceNoiseCfg(
+    enable=True,
+    ref_scale=0.15,
+    floor_scale=0.01,
+    exclude_joint_names=("wrist_pitch", "wrist_yaw"),
+)
+
+g1_29dof_joint_pos_grip_force_dyn = replace(
+    g1_29dof_joint_pos,
+    terms={
+        **g1_29dof_joint_pos.terms,
+        "joint_control": replace(
+            g1_29dof_joint_pos.terms["joint_control"],
+            params={
+                "grip_force": grip_force_cfg_profile,
+                "torque_feedforward": torque_ff_cfg,
+                "torque_reference_noise": torque_noise_cfg,
+            },
+        ),
+    },
+)
+
+__all__ = ["g1_29dof_joint_pos_grip_force", "g1_29dof_joint_pos_grip_force_dyn"]

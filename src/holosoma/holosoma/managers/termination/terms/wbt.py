@@ -70,6 +70,12 @@ class BadTracking(TerminationTermBase):
         bad_motion_body_pos = self.bad_motion_body_pos(motion_command)
         bad_tracking = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
 
+        causes = {
+            "ref_pos": bad_ref_pos,
+            "ref_ori": bad_ref_ori,
+            "motion_body_pos": bad_motion_body_pos,
+        }
+
         # object terminations gated off at low force-mode assist (object_term_min_alpha): a drop
         # must be a reward loss the policy can learn from, not an episode kill that collapses the
         # curriculum's success signal right when the box goes fully physical.
@@ -77,6 +83,8 @@ class BadTracking(TerminationTermBase):
             bad_object_pos = self.bad_object_pos(motion_command)
             bad_object_ori = self.bad_object_ori(motion_command)
             bad_tracking |= bad_object_pos | bad_object_ori
+            causes["object_pos"] = bad_object_pos
+            causes["object_ori"] = bad_object_ori
 
         # grasp-settle grace period: while a contact reset is still settling, suppress tracking
         # termination so the hand<->object contact can equilibrate without killing the episode.
@@ -90,7 +98,33 @@ class BadTracking(TerminationTermBase):
         ):
             bad_tracking = bad_tracking & (settle_counter == 0)
 
+        self._log_termination_causes(bad_tracking, causes)
         return bad_tracking
+
+    def _log_termination_causes(self, bad_tracking: torch.Tensor, causes: dict[str, torch.Tensor]) -> None:
+        """Break the aggregate termination rate down by which condition fired.
+
+        ``bad_tracking`` is an OR over three (or five, with an object) independent conditions, so a
+        run whose ``Env/termination/bad_tracking`` sits at 1.0 says nothing about WHY episodes die:
+        losing the box and falling over are the same number. That distinction decides what to fix --
+        an object-driven failure is a carrying/grasp-diversity problem, a ref_pos/ref_ori one is a
+        locomotion problem, and they call for opposite changes.
+
+        Logged as the fraction OF TERMINATING ENVS tripping each condition, which is the directly
+        readable quantity. The values can sum above 1: a failing episode usually trips several at
+        once (a fall breaks ref_pos and ref_ori together, and drags the box down with it). Read them
+        as "present at the moment of death", not as an exclusive attribution -- the useful signal is
+        which one is ~1.0 and which one is ~0.
+        """
+        log_dict = getattr(self.env, "log_dict", None)
+        if log_dict is None:
+            return
+        # clamp_min(1) rather than a Python `if n_term > 0`: reading a GPU tensor in a host-side
+        # branch forces a device sync on EVERY control step, which measured ~12x slower end to end.
+        # When nothing terminated the numerator is 0 as well, so 0/1 gives the same 0.
+        n_term = bad_tracking.sum().clamp_min(1)
+        for name, mask in causes.items():
+            log_dict[f"termination_cause/{name}"] = (mask & bad_tracking).float().sum() / n_term
 
     def bad_ref_pos(self, motion_command: MotionCommand) -> torch.Tensor:
         """Terminate if the reference position is too far from the robot's position."""

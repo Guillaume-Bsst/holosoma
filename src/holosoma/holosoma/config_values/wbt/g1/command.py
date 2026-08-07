@@ -164,6 +164,52 @@ g1_29dof_wbt_command_w_object_femto14_box36 = replace(
     },
 )
 
+# Meme clip, enrichi par l'etage 05 (SPIDER) : il porte en plus les champs dyn_* (couple articulaire
+# de reference, contact main/pied mesure par main et par pied, force de prise, GRF) produits en
+# rejouant le retargeting dans un vrai solveur de contact MuJoCo, puis fusionnes par
+# wbt_rl/scripts/merge_dynamics.py. Genere depuis le run femto14_box36_halfsphere_torquecap, dont
+# les couples respectent les limites d'effort de l'URDF (max 88 N.m).
+#
+# Tout le reste du clip est bit-a-bit identique a la version ci-dessus : merge_dynamics.py n'ajoute
+# que des cles, il n'en modifie aucune. Un run lance sur ce clip avec l'ancienne config de reward
+# se comporte donc exactement comme avant -- ce sont les termes de reward et le feed-forward de
+# couple qui decident d'utiliser ou non ces champs.
+motion_config_w_object_femto14_box36_dyn = replace(
+    motion_config_w_object,
+    motion_file="holosoma/data/motions/g1_29dof/whole_body_tracking/femto14_box36_w_obj_gtcontact_nobj_dyn.npz",
+    # DIVERSITE DES ETATS DE PORTAGE. grasp_settle_config met settle_robot_noise_scale=0.0, donc
+    # tout reset tombant sur une frame de CONTACT spawne exactement a la pose de reference. Le RSI
+    # fonctionne bien (phase tiree au hasard, start_at_timestep_zero_prob=0.2), mais les frames de
+    # contact font 90/327 = 28 % du clip -- soit TOUTE la phase de portage -- et sur chacune la
+    # policy repart du meme point unique. Elle accumule donc de l'experience de portage tiree d'une
+    # distribution d'un seul etat, ce qui est exactement ce qu'il ne faut pas pour apprendre a
+    # rattraper une prise imparfaite.
+    #
+    # Le 0.0 se justifiait par un vrai probleme (le bruit par acteur casse le contact main<->caisse,
+    # la caisse est ejectee ou lachee, l'episode meurt sur la termination objet). Mais la fenetre de
+    # settle existe PRECISEMENT pour absorber un spawn incoherent : 12 pas de clip gele, termination
+    # supprimee, le solveur de contact equilibre. On ne s'en servait pas.
+    #
+    # 0.35 est un premier point de mesure, pas une valeur reflechie : assez pour sortir du point
+    # unique, assez bas pour que 12 pas de settle aient une chance d'absorber. Le signal a regarder
+    # est le taux de terminaison objet sur les resets de contact -- s'il grimpe, la fenetre ne
+    # suffit pas et il faut la version lourde (re-resoudre N etats de prise stabilises par SPIDER
+    # et echantillonner dedans, cf. l'augmentation physique du papier).
+    grasp_settle=replace(grasp_settle_config, settle_robot_noise_scale=0.35),
+)
+
+g1_29dof_wbt_command_w_object_femto14_box36_dyn = replace(
+    g1_29dof_wbt_command,
+    setup_terms={
+        "motion_command": CommandTermCfg(
+            func="holosoma.managers.command.terms.wbt:MotionCommand",
+            params={
+                "motion_config": motion_config_w_object_femto14_box36_dyn,
+            },
+        )
+    },
+)
+
 # G1 27-DOF: waist_roll/pitch joints are fixed in the URDF; their bodies (waist_roll_link,
 # torso_link) are preserved as rigid bodies in the sim (collapse_fixed_joints=False).
 # body_names_to_track and body_name_ref are identical to 29-DOF.

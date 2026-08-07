@@ -8,6 +8,7 @@ from holosoma.config_values.wbt.g1.command import (
     g1_29dof_wbt_command,
     g1_29dof_wbt_command_w_object,
     g1_29dof_wbt_command_w_object_femto14_box36,
+    g1_29dof_wbt_command_w_object_femto14_box36_dyn,
 )
 
 none = None

@@ -40,3 +40,6 @@ docs/
 .logs/
 holosoma_config.yaml
 wandb-metadata.json
+
+# Dump de trajectoire produit par eval_dump_qpos.py (48 Mo, regenerable)
+manual_run.csv

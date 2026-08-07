@@ -7,6 +7,7 @@ shared between eval_agent.py and run_sim.py.
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import sys
 import threading
@@ -368,6 +369,9 @@ class DirectSimulation:
         self.device = device
         self.simulation_app = simulation_app
         self.simulator = env.sim
+        self._record_csv_file = None
+        self._record_csv_writer = None
+        self._record_step = 0
 
     def __enter__(self) -> Self:
         """Context manager entry - initialize the simulation.
@@ -449,6 +453,34 @@ class DirectSimulation:
             # actually support toggling recording and with better filenames too
             self.simulator.video_recorder.start_recording(episode_id=0)
 
+        # Step 8: Open root-pose CSV recording if requested
+        record_csv_path = getattr(self.config.simulator.config.sim, "record_csv_path", None)
+        if record_csv_path:
+            self._record_csv_file = open(record_csv_path, "w", newline="")  # noqa: SIM115
+            self._record_csv_writer = csv.writer(self._record_csv_file)
+            self._record_csv_writer.writerow(
+                [
+                    "step",
+                    "t",
+                    "robot_pos_x",
+                    "robot_pos_y",
+                    "robot_pos_z",
+                    "robot_quat_x",
+                    "robot_quat_y",
+                    "robot_quat_z",
+                    "robot_quat_w",
+                    "box_pos_x",
+                    "box_pos_y",
+                    "box_pos_z",
+                    "box_quat_w",
+                    "box_quat_x",
+                    "box_quat_y",
+                    "box_quat_z",
+                ]
+            )
+            self._record_csv_file.flush()
+            logger.info(f"Recording root pose CSV to {record_csv_path}")
+
     def run(self) -> None:
         """Run the direct simulation loop with viewer sync and FPS logging.
 
@@ -490,6 +522,20 @@ class DirectSimulation:
                 # Direct simulator step - this triggers bridge.step() inside simulate_at_each_physics_step()
                 self.simulator.simulate_at_each_physics_step()
 
+                if self._record_csv_writer is not None:
+                    self._record_root_pose_row()
+
+                if self.simulator.virtual_gantry and self.simulator.virtual_gantry.enabled:
+                    signal_file = getattr(self.config.simulator.config.sim, "gantry_release_signal_file", None)
+                    release_after = getattr(self.config.simulator.config.sim, "gantry_release_after_steps", None)
+                    if signal_file is not None:
+                        if os.path.exists(signal_file):
+                            self.simulator.virtual_gantry.set_enable(False)
+                            logger.info(f"Auto-released virtual gantry at step {step_count} (signal file observed)")
+                    elif release_after is not None and step_count == release_after:
+                        self.simulator.virtual_gantry.set_enable(False)
+                        logger.info(f"Auto-released virtual gantry at step {step_count}")
+
                 # Update viewer at display rate
                 if step_count % viewer_steps == 0:
                     self.simulator.render()
@@ -515,6 +561,30 @@ class DirectSimulation:
         logger.info(f"Simulation completed after {step_count} steps")
         logger.info(f"Average FPS: {avg_fps:.1f} (target: {sim_frequency})")
 
+    def _record_root_pose_row(self) -> None:
+        """Append one row of robot root pose + box pose to the recording CSV, if enabled."""
+        root_state = self.simulator.robot_root_states[0].detach().cpu().numpy()
+        robot_pos = root_state[:3]
+        robot_quat_xyzw = root_state[3:7]
+
+        box_row = [float("nan")] * 7
+        box_pose = self.simulator.get_free_box_and_ref_pose()
+        if box_pose is not None:
+            box_pos, box_quat_wxyz, _ref_pos, _ref_quat_wxyz = box_pose
+            box_row = [*box_pos.tolist(), *box_quat_wxyz.tolist()]
+
+        self._record_csv_writer.writerow(
+            [
+                self._record_step,
+                self._record_step / self.config.simulator.config.sim.fps,
+                *robot_pos.tolist(),
+                *robot_quat_xyzw.tolist(),
+                *box_row,
+            ]
+        )
+        self._record_csv_file.flush()
+        self._record_step += 1
+
     def cleanup(self) -> None:
         """Handle simulation cleanup."""
         # Cleanup environment
@@ -523,6 +593,10 @@ class DirectSimulation:
 
         if self.simulator.video_recorder:
             self.simulator.video_recorder.cleanup()
+
+        if self._record_csv_file is not None:
+            self._record_csv_file.close()
+            logger.info(f"Closed root pose recording ({self._record_step} rows)")
 
         # Cleanup simulation app
         if self.simulation_app:

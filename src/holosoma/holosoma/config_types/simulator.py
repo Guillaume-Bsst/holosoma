@@ -192,6 +192,21 @@ class SimEngineConfig:
     whole_body_tracking/femto14_support_world.obj). Its AABB gives the table's size and clip
     position; collision is an exact box geom (see add_support)."""
 
+    record_csv_path: str | None = None
+    """run_sim only: if set, log robot root pose (robot_root_states, world frame, xyzw) and box
+    pose (get_free_box_and_ref_pose, world frame, wxyz) to this CSV path every physics step."""
+
+    gantry_release_after_steps: int | None = None
+    """run_sim only: if set and virtual_gantry.enabled=True, auto-disable the gantry (elastic
+    band) once this many physics steps have elapsed, so unattended/headless runs don't stay
+    suspended forever (normally a human releases it via the viewer's '9' key once stable)."""
+
+    gantry_release_signal_file: str | None = None
+    """run_sim only: if set and virtual_gantry.enabled=True, disable the gantry the first physics
+    step this file is observed to exist (checked every step) -- lets an external process (e.g. the
+    inference side, right when it sends the policy-start command) trigger the release precisely,
+    instead of guessing a fixed step count. Takes priority over gantry_release_after_steps."""
+
 
 @dataclass(frozen=True)
 class IsaacGymPhysicsConfig:

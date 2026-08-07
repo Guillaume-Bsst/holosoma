@@ -39,6 +39,7 @@ from holosoma.config_types.experiment import ExperimentConfig
 from holosoma.utils.eval_utils import (
     CheckpointConfig,
     init_sim_imports,
+    load_checkpoint,
     load_saved_experiment_config,
 )
 from holosoma.utils.helpers import get_class
@@ -112,7 +113,8 @@ def main() -> None:
         device=device, env=env, config=cfg.algo.config, log_dir=os.path.dirname(evald.out) or ".", multi_gpu_cfg=None
     )
     algo.setup()
-    algo.load(evald.checkpoint)
+    local_checkpoint = load_checkpoint(evald.checkpoint, log_dir=os.path.dirname(evald.out) or ".")
+    algo.load(str(local_checkpoint))
     policy = algo.get_inference_policy()
 
     num_envs = env.num_envs

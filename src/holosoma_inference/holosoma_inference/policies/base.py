@@ -739,6 +739,11 @@ class BasePolicy:
             self.cmd_q[:] = target_q
             self._last_cmd_q = self.cmd_q.copy()
 
+        # Stage 4b: couple feedforward. Nul par defaut ; les policies qui ont ete ENTRAINEES avec
+        # un biais de couple applique par l'environnement (cf. grip force) doivent le rejouer ici,
+        # sinon le robot reel execute une politique amputee d'une partie de ses efforts.
+        self._update_feedforward_torque(robot_state_data, use_policy and not get_ready)
+
         # Stage 5: Action Pub
         with self.latency_tracker.measure("action_pub"):
             self.interface.send_low_command(
@@ -749,6 +754,17 @@ class BasePolicy:
                 kp_override=kp_override,
                 kd_override=kd_override,
             )
+
+    def _update_feedforward_torque(self, robot_state_data, policy_active: bool) -> None:
+        """Remplit ``self.cmd_tau`` avant l'envoi. No-op par defaut.
+
+        Surcharge par WholeBodyTrackingPolicy pour rejouer le biais de prise. Le contrat impose de
+        remettre le vecteur a zero des que la policy n'est pas active (init, commande manuelle) :
+        un couple feedforward residuel pendant la phase de mise en position pousserait les
+        poignets sans qu'aucune boucle ne le compense.
+        """
+        if not policy_active and self.cmd_tau.any():
+            self.cmd_tau[:] = 0.0
 
     def _get_manual_command(self, robot_state_data):
         """Optional manual command when policy control is disabled."""

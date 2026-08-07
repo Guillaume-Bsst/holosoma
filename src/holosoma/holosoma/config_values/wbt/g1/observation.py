@@ -217,8 +217,55 @@ g1_29dof_wbt_observation_w_object_actor = ObservationManagerCfg(
     },
 )
 
+_OBS = "holosoma.managers.observation.terms.wbt:"
+
+# Observations PRIVILEGIEES du critique (etage 05). Le critique n'est jamais deploye : il n'existe
+# que pour estimer la valeur pendant l'entrainement, donc tout ce qui reduit la variance de cette
+# estimation est gratuit vis-a-vis du robot reel. C'est la meme asymetrie qui lui donne deja
+# base_lin_vel / obj_lin_vel_b / robot_body_pos_b que l'acteur n'a pas.
+#
+# AUCUN de ces termes ne doit rejoindre le groupe acteur : soit ils n'existent pas sur le robot
+# (forces de contact mesurees -- le G1 n'a pas de capteur d'effort aux poignets), soit ils
+# laisseraient la policy se caler sur la position dans le clip plutot que sur son etat (phase).
+critic_obs_w_object_dyn_terms = {
+    **critic_obs_w_object_terms,
+    # Le trou principal : ni l'acteur ni le critique ne savaient ou ils en etaient dans le clip.
+    # motion_command ne porte que la pose articulaire de reference. Avec le RSI qui demarre a une
+    # phase uniforme et un timeout en fin de clip, le retour atteignable depend directement du temps
+    # RESTANT -- que rien dans l'entree ne contenait.
+    "motion_phase": ObsTermCfg(func=f"{_OBS}motion_phase", scale=1.0, noise=0.0),
+    # Le plafond de reward varie avec la frame (3.0 des 11.0 positifs sont inaccessibles hors
+    # contact). Ces flags SONT cette variation -- la meme information que reward/achievable.
+    "ref_obj_contact_lr": ObsTermCfg(func=f"{_OBS}ref_obj_contact_lr", scale=1.0, noise=0.0),
+    "ref_foot_contact_lr": ObsTermCfg(func=f"{_OBS}ref_foot_contact_lr", scale=1.0, noise=0.0),
+    # "De combien il faut serrer" : profil de force mesure par le solve physique. scale=0.01 parce
+    # que ces valeurs montent a ~190 N alors que toutes les autres observations sont en O(1).
+    "ref_grip_force_lr": ObsTermCfg(func=f"{_OBS}ref_grip_force_lr", scale=0.01, noise=0.0),
+    # Ce que le robot touche REELLEMENT, par opposition a ce que la reference prescrit. C'est la
+    # variable d'etat a partir de laquelle les rewards de contact sont calculees. scale=0.01 :
+    # meme raison, les GRF montent a ~2400 N.
+    "measured_contact_forces": ObsTermCfg(func=f"{_OBS}measured_contact_forces", scale=0.01, noise=0.0),
+    # Le critique avait obj_lin_vel_b mais pas l'angulaire. Or la mise en rotation de la caisse est
+    # exactement ce que object_flat_contact_quality_exp cherche a empecher.
+    "obj_ang_vel_b": ObsTermCfg(func=f"{_OBS}obj_ang_vel_b", scale=1.0, noise=0.0),
+}
+
+g1_29dof_wbt_observation_w_object_actor_dyn = ObservationManagerCfg(
+    groups={
+        # Acteur STRICTEMENT inchange -> deployabilite et dimensions preservees.
+        "actor_obs": actor_obs_w_object,
+        "critic_obs": ObsGroupCfg(
+            concatenate=True,
+            enable_noise=False,
+            history_length=1,
+            terms=critic_obs_w_object_dyn_terms,
+        ),
+    },
+)
+
 __all__ = [
     "g1_29dof_wbt_observation",
     "g1_29dof_wbt_observation_w_object",
     "g1_29dof_wbt_observation_w_object_actor",
+    "g1_29dof_wbt_observation_w_object_actor_dyn",
 ]

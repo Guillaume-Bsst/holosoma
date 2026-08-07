@@ -6,6 +6,7 @@ from holosoma.config_values.wbt.g1.reward import (
     g1_29dof_wbt_fast_sac_reward,
     g1_29dof_wbt_reward,
     g1_29dof_wbt_reward_w_object,
+    g1_29dof_wbt_reward_w_object_dyn,
 )
 
 none = None
@@ -21,6 +22,7 @@ DEFAULTS = {
     "g1_29dof_wbt": g1_29dof_wbt_reward,
     "g1_27dof_wbt": g1_29dof_wbt_reward,
     "g1_29dof_wbt_w_object": g1_29dof_wbt_reward_w_object,
+    "g1_29dof_wbt_w_object_dyn": g1_29dof_wbt_reward_w_object_dyn,
     "g1_27dof_wbt_w_object": g1_29dof_wbt_reward_w_object,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac_reward,
     "g1_27dof_wbt_fast_sac": g1_29dof_wbt_fast_sac_reward,
