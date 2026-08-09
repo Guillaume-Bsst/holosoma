@@ -15,6 +15,44 @@ def test_flag_off_bit_identical(tmp_path):
     assert np.array_equal(qpos, base), np.abs(qpos - base).max()
 
 
+def test_flag_off_with_ground_bit_identical(tmp_path):
+    """Same guard as above, but with ground ON -- the configuration of the six ALREADY
+    PUBLISHED pivots of the ground-only campaign (2026-08-03), which
+    `test_flag_off_bit_identical` does not cover: its fixture passes
+    `ground_points_world=None`, so it goes through neither the two ground blocks of
+    `solve_single_iteration` nor `_calc_ground_vertex_jacobian`.
+
+    Those blocks are guarded by `self.object_variable`, which must keep the flag-off path
+    bit-identical to the revision from BEFORE task 1 even when the ground grid is present.
+    `data/baseline_largebox_ground_15f.npz` was produced on that base revision (`8f42d33`,
+    where the objvar+ground `NotImplementedError` was still in place), through this very
+    path, and checked deterministic (two bit-identical runs) before being committed.
+
+    Non-vacuity: the second assertion demands that the grid actually changes the
+    trajectory. Without it, a regression that IGNORED `ground_points_world` would pass
+    silently (the baseline would ignore it just as much), and the test would cover nothing.
+    """
+    from tests_objvar.largebox_fixture import build_largebox_inputs
+    from holosoma_retargeting.config_types.task import TaskConfig
+    from holosoma_retargeting.examples.robot_retarget import create_ground_points
+
+    r, mk = build_largebox_inputs(15, {})
+    assert not r.object_variable, "this test is about the FLAG OFF path"
+    cfg = TaskConfig()
+    mk["ground_points_world"] = create_ground_points(
+        cfg.climbing_ground_range, cfg.climbing_ground_range, cfg.climbing_ground_size)
+    out = str(tmp_path / "off_ground.npz")
+    r.retarget_motion(dest_res_path=out, **mk)
+    qpos = np.load(out)["qpos"]
+
+    base = np.load("tests_objvar/data/baseline_largebox_ground_15f.npz")["qpos"]
+    assert np.array_equal(qpos, base), np.abs(qpos - base).max()
+
+    no_ground = np.load("tests_objvar/data/baseline_largebox_15f.npz")["qpos"]
+    assert np.abs(qpos - no_ground).max() > 1e-6, \
+        "the ground grid had no effect -- this test then no longer covers the ground path"
+
+
 def test_strong_anchor_recovers_fixed_object(tmp_path):
     qpos, mk = _run(15, {"object_variable": True, "w_object_tracking": 1e6}, tmp_path, "strong")
     ref = mk["object_poses_augmented"][:15]        # mujoco order [pos(3), quat wxyz(4)]
