@@ -50,8 +50,12 @@ def hdmi_contact_reward(
     Off-gate returns 0 rather than 1: this is an additive term, so paying a constant on non-contact
     frames would bonus the (easy) pre-contact phase against the (hard) carry phase -- the same
     attractor-removal argument spelled out in ``object_flat_contact_quality_exp``.
+
+    ``gate`` may be boolean (HDMI's c_t) or a weight in [0, 1]; it multiplies the reward, so a bool
+    gate is exactly the on/off behaviour and a ramped activation
+    (``utils.contact_schedule.ramp_activation``) fades the term in with the contact.
     """
     proximity = torch.exp(-distance / sigma_pos)
     force_bonus = torch.exp((force - force_threshold) / sigma_force).clamp(min=1.0, max=max_force_bonus)
     reward = proximity * force_bonus
-    return torch.where(gate, reward, torch.zeros_like(reward))
+    return reward * gate.to(reward.dtype)

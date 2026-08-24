@@ -403,3 +403,23 @@ class MotionConfig:
 
     # object-interaction: grasp-consistent init + settling window (no-op unless enabled + has_object)
     grasp_settle: GraspSettleConfig = field(default_factory=GraspSettleConfig)
+
+    # --- contact schedule: per-frame contact booleans supplied from outside ---------------------
+    contact_schedule_file: str = ""
+    """MPC contact-schedule NPZ (see holosoma/utils/contact_schedule.py for the format). Empty
+    disables it, and the runtime nearest-anchor distance
+    threshold is used instead. Takes precedence over any contact fields baked into the motion NPZ:
+    the point of passing a schedule is to decide the contact truth yourself.
+
+    Single-clip only. Under motion_dir (MultiMotionLoader) each clip would need its own schedule,
+    so passing one there is refused rather than silently applied to the concatenation."""
+
+    contact_schedule_fps: float = 0.0
+    """Frame rate of contact_schedule_file's own timeline. REQUIRED when the file is set, and never
+    inferred: the schedule NPZ carries no cadence of its own, and a wrong one shifts every contact
+    phase without any symptom. Same stance as MPC2's _fps_du_npz -- refuse rather than guess."""
+
+    contact_schedule_ramp_frames: int = 0
+    """Frames over which a contact ramps IN (release stays immediate). 0 keeps the plain binary
+    schedule, which is what HDMI's contact reward assumes; >0 trades that fidelity for a smoother
+    reward surface. See utils/contact_schedule.py:ramp_activation."""

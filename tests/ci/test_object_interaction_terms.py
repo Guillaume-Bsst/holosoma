@@ -6,9 +6,7 @@ that do not carry the fields they need. The scalar math itself is covered in
 ``test_object_interaction.py``.
 """
 
-import pytest
 import torch
-
 from holosoma.managers.command.terms.wbt import MotionCommand
 from holosoma.managers.observation.terms.wbt import obj_ang_vel_b, obj_contact_flag, obj_lin_vel_b_rotated
 from holosoma.managers.reward.terms.wbt import (
@@ -29,6 +27,7 @@ class _Motion:
     has_gt_contact = True
     has_gt_witness = True
     has_object_ang_vel = True
+    has_contact_schedule = False
 
     def __init__(self, **over):
         self.object_ref_anchor_idx = torch.tensor([0, 1])
@@ -62,14 +61,19 @@ class _Env:
         self.command_manager = type("CM", (), {"get_state": staticmethod(lambda _: mc)})()
 
 
-def _build(*, forces=None, anchor_pos=None, obj_lin=None, obj_ang=None, witness=None, motion_over=None):
+def _build(*, forces=None, anchor_pos=None, ref_anchor_pos=None, obj_lin=None, obj_ang=None,
+           witness=None, motion_over=None):
     """A MotionCommand wired to stub tensors, plus the env that carries it."""
     mc = object.__new__(MotionCommand)
     mc.motion = _Motion(**(motion_over or {}))
+    if ref_anchor_pos is not None:
+        mc.motion.body_pos_w[:, ANCHORS, :] = torch.as_tensor(ref_anchor_pos, dtype=torch.float32)
     if witness is not None:
         mc.motion.object_ref_witness_local = witness
     mc.time_steps = torch.arange(N)
+    mc.device = "cpu"
     mc._anchor_body_indexes = torch.tensor(ANCHORS)
+    mc.grasp_settle_cfg = type("G", (), {"box_half_extents": (0.1, 0.1, 0.1)})()
     mc.object_indices_in_simulator = torch.arange(N)
 
     root = torch.zeros(N, 13)
@@ -179,10 +183,71 @@ def test_contact_reward_is_zero_where_the_reference_says_no_contact():
     assert r[0] > 0.0
 
 
-@pytest.mark.parametrize("over", [{"has_gt_witness": False}])
-def test_contact_reward_is_neutral_without_a_reference_witness(over):
-    env, _ = _build(motion_over=over)
+def test_contact_reward_falls_back_to_the_box_surface_without_a_witness():
+    # box at the origin, half extents 0.1 -> the +x face sits at x = 0.1
+    on_surface, far = 0.1, 0.6
+    env, _ = _build(
+        anchor_pos=torch.tensor([[[on_surface, 0, 0], [0, 0, 0]], [[far, 0, 0], [0, 0, 0]]]),
+        motion_over={"has_gt_witness": False, "object_ref_anchor_idx": torch.tensor([0, 0])},
+    )
+    r = object_contact_force_match_exp(env, **CONTACT_KW)
+    # NOT neutral: the term works without a witness, which is what makes it usable on clips that
+    # carry no reference contact at all
+    assert torch.isclose(r[0], torch.tensor(1.0), atol=1e-6)   # hand on the surface -> distance 0
+    assert r[1] < r[0]                                          # 0.5 m off the surface
+
+
+def test_contact_reward_is_neutral_without_resolved_anchors():
+    env, mc = _build()
+    mc._anchor_body_indexes = None
     assert torch.allclose(object_contact_force_match_exp(env, **CONTACT_KW), torch.ones(N), atol=1e-6)
+
+
+#########################################################################################
+## the supplied contact schedule drives the gate
+#########################################################################################
+def _with_schedule(weights, **kw):
+    """weights: (N, 2) hand activation in [0, 1] for the current frames."""
+    env, mc = _build(**kw)
+    mc.motion.has_contact_schedule = True
+    mc.motion._schedule_hand_contact = torch.tensor(weights, dtype=torch.float32)
+    return env, mc
+
+
+def test_schedule_gate_replaces_the_binary_reference():
+    # reference says contact on both envs; the schedule says only the first
+    env, _ = _with_schedule([[1.0, 1.0], [0.0, 0.0]])
+    r = object_contact_force_match_exp(env, **CONTACT_KW)
+    assert r[0] > 0.0
+    assert r[1] == 0.0
+
+
+def test_schedule_ramp_scales_the_reward_continuously():
+    full, half = _with_schedule([[1.0, 1.0], [1.0, 1.0]])[0], _with_schedule([[0.5, 0.5], [0.5, 0.5]])[0]
+    r_full = object_contact_force_match_exp(full, **CONTACT_KW)
+    r_half = object_contact_force_match_exp(half, **CONTACT_KW)
+    assert torch.allclose(r_half, r_full * 0.5, atol=1e-6)
+
+
+def test_schedule_picks_the_nearer_of_the_hands_it_closes():
+    # both hands closed by the schedule; the anchor must be the one nearest the box (env 1: right)
+    env, mc = _with_schedule(
+        [[1.0, 1.0], [1.0, 1.0]],
+        ref_anchor_pos=torch.tensor([[[0.1, 0, 0], [0.9, 0, 0]], [[0.9, 0, 0], [0.1, 0, 0]]]),
+    )
+    idx, contact = mc._lookup_ref_contact(mc.time_steps, mc.anchor_pos_w, mc.object_pos_w)
+    assert contact.all()
+    assert idx.tolist() == [0, 1]
+
+
+def test_schedule_ignores_a_hand_it_leaves_open_even_if_it_is_nearer():
+    env, mc = _with_schedule(
+        [[0.0, 1.0], [0.0, 1.0]],
+        ref_anchor_pos=torch.tensor([[[0.1, 0, 0], [0.9, 0, 0]], [[0.1, 0, 0], [0.9, 0, 0]]]),
+    )
+    idx, contact = mc._lookup_ref_contact(mc.time_steps, mc.anchor_pos_w, mc.object_pos_w)
+    assert contact.all()
+    assert idx.tolist() == [1, 1]  # the far hand, because it is the one the schedule closes
 
 
 #########################################################################################

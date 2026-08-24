@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-
 from holosoma.utils.contact_schedule import load_mpc_schedule, ramp_activation, resample_nearest
 
 PAIRS = ["left_foot|ground", "left_hand|box32", "right_foot|ground", "right_hand|box32",

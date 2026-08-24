@@ -182,22 +182,34 @@ def object_contact_force_match_exp(
 
     Neutral (1) without a reference witness or without resolved anchors, like its kinematic sibling.
     """
+    from holosoma.utils.box_geometry import box_nearest_and_signed_distance
     from holosoma.utils.grasp_settle import gather_anchor
     from holosoma.utils.object_interaction import hdmi_contact_reward
-    from holosoma.utils.rotations import quat_apply
+    from holosoma.utils.rotations import quat_apply, quat_rotate_inverse
 
     mc = _get_motion_command_and_assert_type(env)
-    if mc._anchor_body_indexes is None or not mc.motion.has_gt_witness:
+    if mc._anchor_body_indexes is None:
         return torch.ones(env.num_envs, device=env.device)
 
     anchor_idx, ref_contact = mc._lookup_ref_contact(mc.time_steps, mc.anchor_pos_w, mc.object_pos_w)
     a_pos, _ = gather_anchor(mc.robot_anchor_pos_w, mc.robot_anchor_quat_w, anchor_idx)
 
-    # p_target: the reference witness point (box-local) carried on the CURRENT sim box pose, the
-    # same convention as object_surface_contact_error_exp. Tracking the box's own pose is the job of
+    # p_target, box-local, carried on the CURRENT sim box pose -- the same convention as
+    # object_surface_contact_error_exp. Tracking the box's own pose is the job of
     # object_global_ref_*; this term grades the hand against the box that is actually there.
-    witness_local = mc.motion.object_ref_witness_local[mc.time_steps]  # (N, 3) box-local
-    p_target = mc.simulator_object_pos_w + quat_apply(mc.simulator_object_quat_w, witness_local, w_last=True)
+    box_pos, box_quat = mc.simulator_object_pos_w, mc.simulator_object_quat_w
+    if mc.motion.has_gt_witness:
+        witness_local = mc.motion.object_ref_witness_local[mc.time_steps]  # (N, 3)
+    else:
+        # No reference witness on this clip: fall back to the nearest point of the box surface, so
+        # the distance becomes the hand-to-surface gap. Less faithful to HDMI, whose p_target is the
+        # demo's own contact point, but the FORCE factor -- what this term adds over the purely
+        # kinematic contact terms -- needs no witness at all, and requiring one would make the whole
+        # term inert on every clip that does not carry one.
+        p_local = quat_rotate_inverse(box_quat, a_pos - box_pos, w_last=True)
+        half_extents = torch.tensor(mc.grasp_settle_cfg.box_half_extents, device=env.device, dtype=p_local.dtype)
+        _, witness_local = box_nearest_and_signed_distance(p_local, half_extents)
+    p_target = box_pos + quat_apply(box_quat, witness_local, w_last=True)
     distance = torch.norm(a_pos - p_target, dim=-1)
 
     # ||F|| on the contact hand, maxed over the sensor history like UndesiredContacts does: contact
@@ -208,10 +220,17 @@ def object_contact_force_match_exp(
     env_ids = torch.arange(env.num_envs, device=env.device)
     force = force_per_anchor[env_ids, anchor_idx.clamp(0, force_per_anchor.shape[1] - 1)]  # (N,)
 
+    # A supplied contact schedule is the gate; with ramp frames it fades in, which a bare boolean
+    # cannot express. Without one, HDMI's plain binary c_t.
+    if mc.motion.has_contact_schedule:
+        gate = mc.schedule_contact_weight(mc.time_steps)[env_ids, anchor_idx.clamp(0, 1)]
+    else:
+        gate = ref_contact
+
     return hdmi_contact_reward(
         distance,
         force,
-        ref_contact,
+        gate,
         sigma_pos=sigma_pos,
         sigma_force=sigma_force,
         force_threshold=force_threshold,

@@ -46,6 +46,9 @@ class MotionLoader:
         robot_body_names: list[str],
         robot_joint_names: list[str],
         device: str = "cpu",
+        contact_schedule_file: str = "",
+        contact_schedule_fps: float = 0.0,
+        contact_schedule_ramp_frames: int = 0,
     ):
         # Resolve the motion file path using importlib.resources
         motion_file = resolve_data_file_path(motion_file)
@@ -58,6 +61,74 @@ class MotionLoader:
         self._joint_indexes = joint_indexes
         self._body_indexes = body_indexes
         self.time_step_total = self._joint_pos.shape[0]
+        self._load_contact_schedule(
+            contact_schedule_file, contact_schedule_fps, contact_schedule_ramp_frames, device
+        )
+
+    def _load_contact_schedule(self, path: str, fps: float, ramp_frames: int, device: str) -> None:
+        """Fold an externally supplied MPC contact schedule onto this clip's timeline.
+
+        Takes precedence over whatever contact fields the motion NPZ carries: passing a schedule is
+        how you say which contact truth to train against.
+        """
+        n_frames = self.time_step_total
+        self.has_contact_schedule = bool(path)
+        if not self.has_contact_schedule:
+            self._schedule_hand_contact = torch.zeros(0, 2, device=device)
+            self._schedule_foot_ground = torch.zeros(0, 2, device=device)
+            self._schedule_object_ground = torch.zeros(0, device=device)
+            self._schedule_object_support = torch.zeros(0, device=device)
+            return
+
+        from holosoma.utils.contact_schedule import load_mpc_schedule, ramp_activation, resample_nearest
+
+        if fps <= 0.0:
+            raise ValueError(
+                "contact_schedule_fps must be set (>0) alongside contact_schedule_file: the "
+                "schedule NPZ carries no cadence, and guessing it shifts every contact phase in "
+                "silence."
+            )
+        schedule = load_mpc_schedule(resolve_data_file_path(path))
+        clip_fps = float(self.fps)
+
+        def to_clip(active: np.ndarray) -> torch.Tensor:
+            flat = active.reshape(active.shape[0], -1)
+            resampled = resample_nearest(flat, fps, n_frames, clip_fps)
+            weights = ramp_activation(resampled, ramp_frames)
+            return torch.tensor(weights, dtype=torch.float32, device=device).view(n_frames, -1)
+
+        self._schedule_hand_contact = to_clip(schedule.hand_object)  # (T, 2)
+        self._schedule_foot_ground = to_clip(schedule.foot_ground)  # (T, 2)
+        self._schedule_object_ground = to_clip(schedule.object_ground[:, None])[:, 0]  # (T,)
+        self._schedule_object_support = to_clip(schedule.object_support[:, None])[:, 0]  # (T,)
+        logger.info(
+            f"[contact_schedule] {path}: {schedule.num_frames} frames at {fps:g} fps -> {n_frames} "
+            f"at {clip_fps:g} fps, hands in contact on "
+            f"{float((self._schedule_hand_contact.amax(dim=-1) > 0).float().mean()):.0%} of frames"
+            + (f", ramp {ramp_frames} frames" if ramp_frames > 0 else "")
+            + (f", pairs ignored (never active): {list(schedule.unmapped)}" if schedule.unmapped else "")
+        )
+
+    def _pad_contact_schedule(self, n_seg: int, prepend: bool) -> None:
+        """Pad the schedule channels over the default-pose transition with "no contact".
+
+        Same convention as the GT-contact padding above: the interpolated transition between the
+        default pose and the clip is not part of the captured motion, so nothing is in contact
+        there. Without this the schedule and the clip drift apart by n_seg frames and every
+        time_steps lookup lands on the wrong phase.
+        """
+        if not self.has_contact_schedule:
+            return
+        for attr in (
+            "_schedule_hand_contact",
+            "_schedule_foot_ground",
+            "_schedule_object_ground",
+            "_schedule_object_support",
+        ):
+            existing = getattr(self, attr)
+            shape = (n_seg,) + tuple(existing.shape[1:])
+            pad = torch.zeros(shape, dtype=existing.dtype, device=existing.device)
+            setattr(self, attr, torch.cat((pad, existing) if prepend else (existing, pad), dim=0))
 
     def _get_index_of_a_in_b(self, a_names: List[str], b_names: List[str], device: str = "cpu") -> torch.Tensor:
         indexes = []
@@ -362,6 +433,8 @@ class MotionLoader:
             tensors = (segments[seg_key], existing) if prepend else (existing, segments[seg_key])
             setattr(self, attr_name, torch.cat(tensors, dim=0))
 
+        self._pad_contact_schedule(segments["joint_pos"].shape[0], prepend)
+
         if self.has_gt_contact:
             # The prepended/appended transition (default pose <-> clip) has no real demo contact --
             # pad with "no contact" (False / large distance / anchor 0), same convention `active`
@@ -435,7 +508,21 @@ class MultiMotionLoader:
         robot_body_names: list[str],
         robot_joint_names: list[str],
         device: str = "cpu",
+        contact_schedule_file: str = "",
+        contact_schedule_fps: float = 0.0,
+        contact_schedule_ramp_frames: int = 0,
     ):
+        # A schedule is baked for ONE take. Applied to a concatenation of clips it would line up
+        # with the first one and be pure noise on the rest -- refuse instead of silently mislabeling
+        # every contact frame after the first clip.
+        if contact_schedule_file:
+            raise ValueError(
+                "contact_schedule_file is not supported with motion_dir: a schedule is baked for a "
+                "single take, so there is no correct way to apply one to a concatenation of clips. "
+                "Use motion_file with the clip the schedule was baked for."
+            )
+        del contact_schedule_fps, contact_schedule_ramp_frames  # only meaningful with a file
+        self.has_contact_schedule = False
         # Support comma-separated directories for combining multiple datasets
         dirs = [d.strip() for d in motion_dir.split(",")]
         motion_files = []
@@ -807,6 +894,9 @@ class MotionCommand(CommandTermBase):
                 robot_body_names_alias,
                 robot_joint_names,
                 device=self.device,
+                contact_schedule_file=self.motion_cfg.contact_schedule_file,
+                contact_schedule_fps=self.motion_cfg.contact_schedule_fps,
+                contact_schedule_ramp_frames=self.motion_cfg.contact_schedule_ramp_frames,
             )
         else:
             self.motion = MotionLoader(
@@ -814,6 +904,9 @@ class MotionCommand(CommandTermBase):
                 robot_body_names_alias,
                 robot_joint_names,
                 device=self.device,
+                contact_schedule_file=self.motion_cfg.contact_schedule_file,
+                contact_schedule_fps=self.motion_cfg.contact_schedule_fps,
+                contact_schedule_ramp_frames=self.motion_cfg.contact_schedule_ramp_frames,
             )
 
         # Store body and joint indexes for interpolation
@@ -1619,10 +1712,36 @@ class MotionCommand(CommandTermBase):
         carries them. Falls back to the runtime nearest-anchor distance threshold
         (select_grasp_anchor) for motions without it -- keeps older/synthetic clips working.
         """
+        if self.motion.has_contact_schedule:
+            closed = self.schedule_contact_weight(time_idx) > 0.0  # (N, A)
+            dist = torch.norm(anchor_pos - obj_pos.unsqueeze(1), dim=-1)  # (N, A)
+            # Among the hands the schedule closes, take the NEAREST. A schedule is per-hand and the
+            # carries here are bimanual on every contact frame, so a fixed side would half the time
+            # grade the wrist that is further from the box.
+            masked = torch.where(closed, dist, torch.full_like(dist, float("inf")))
+            any_closed = closed.any(dim=-1)
+            anchor_idx = torch.where(any_closed, masked.argmin(dim=1), dist.argmin(dim=1))
+            return anchor_idx, any_closed
         if self.motion.has_gt_contact:
             return self.motion.object_ref_anchor_idx[time_idx], self.motion.object_ref_contact[time_idx]
         anchor_idx, anchor_dist = select_grasp_anchor(anchor_pos, obj_pos)
         return anchor_idx, anchor_dist < self.grasp_settle_cfg.contact_distance_threshold
+
+    def schedule_contact_weight(self, time_idx: torch.Tensor) -> torch.Tensor:
+        """(N, A) hand<->object activation in [0, 1] from the supplied schedule, per candidate anchor.
+
+        All zeros without a schedule, so callers can multiply unconditionally. With
+        contact_schedule_ramp_frames == 0 the values are exactly 0.0 / 1.0 and multiplying by them
+        is the same as gating on the boolean.
+        """
+        n_anchor = 2 if self._anchor_body_indexes is None else int(self._anchor_body_indexes.numel())
+        if not self.motion.has_contact_schedule:
+            return torch.zeros(time_idx.shape[0], n_anchor, device=self.device)
+        weights = self.motion._schedule_hand_contact[time_idx]  # (N, 2)
+        out = torch.zeros(time_idx.shape[0], n_anchor, device=self.device)
+        k = min(n_anchor, weights.shape[1])
+        out[:, :k] = weights[:, :k]
+        return out
 
     @property
     def object_termination_enabled(self) -> bool:
