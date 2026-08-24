@@ -2,7 +2,12 @@
 
 import numpy as np
 import pytest
-from holosoma.utils.contact_schedule import load_mpc_schedule, ramp_activation, resample_nearest
+from holosoma.utils.contact_schedule import (
+    inferred_fps,
+    load_mpc_schedule,
+    ramp_activation,
+    resample_nearest,
+)
 
 PAIRS = ["left_foot|ground", "left_hand|box32", "right_foot|ground", "right_hand|box32",
          "obj0|ground", "obj0|support"]
@@ -92,45 +97,68 @@ def test_non_schedule_npz_is_refused(tmp_path):
 
 
 #########################################################################################
-## resample_nearest
+## resample_nearest / inferred_fps
 #########################################################################################
-def test_resample_30_to_50_fps_keeps_the_phase():
+def test_resample_keeps_the_phase_across_a_30_to_50_fps_pair():
     src = np.zeros((197, 1), dtype=bool)
     src[60:120] = True                                   # 2.000 s -> 4.000 s at 30 fps
-    out = resample_nearest(src, 30.0, 327, 50.0)
+    out = resample_nearest(src, 327)                     # onto a 327-frame, 50 fps clip
     assert out.shape == (327, 1)
     on = np.flatnonzero(out[:, 0])
-    assert abs(on[0] / 50.0 - 60 / 30.0) < 0.02          # edges land within one source frame
-    assert abs((on[-1] + 1) / 50.0 - 120 / 30.0) < 0.02
+    one_src_frame = 1 / 30.0
+    assert abs(on[0] / 50.0 - 60 / 30.0) <= one_src_frame          # edges land within one source frame
+    assert abs((on[-1] + 1) / 50.0 - 120 / 30.0) <= one_src_frame
+
+
+def test_resample_matches_an_explicit_fps_mapping_on_phase_structured_contact():
+    # The reason no cadence is asked for. A one-frame index shift only shows up at a phase EDGE, so
+    # this must be measured on a phase-structured signal like a real schedule (contiguous contacts),
+    # not on noise, where every frame is an edge.
+    src = np.zeros((197, 1), dtype=bool)
+    src[20:70] = True
+    src[95:150] = True
+    src[180:] = True
+    proportional = resample_nearest(src, 327)
+    i = np.arange(327)
+    explicit = src[np.rint(i / 50.0 * 30.0).astype(int).clip(0, 196)]
+    assert (proportional != explicit).sum() <= 6         # 3 phases -> at most a couple of edges each
 
 
 def test_resample_is_nearest_never_blended():
     src = np.array([[True], [False], [True]], dtype=bool)
-    out = resample_nearest(src, 10.0, 6, 20.0)
+    out = resample_nearest(src, 6)
     assert out.dtype == bool
     assert set(np.unique(out)) <= {True, False}
 
 
-def test_resample_identity_when_rates_match():
+def test_resample_identity_when_lengths_match():
     src = np.random.default_rng(0).random((20, 3)) > 0.5
-    assert np.array_equal(resample_nearest(src, 25.0, 20, 25.0), src)
+    assert np.array_equal(resample_nearest(src, 20), src)
 
 
-def test_resample_refuses_a_schedule_from_another_clip():
-    # 197 frames at 30 fps = 6.57 s; a 555-frame 50 fps clip is 11.1 s -> not the same take
-    with pytest.raises(ValueError, match="not baked for this clip"):
-        resample_nearest(np.zeros((197, 2), dtype=bool), 30.0, 555, 50.0)
+def test_resample_handles_downsampling_too():
+    src = np.zeros((100, 1), dtype=bool)
+    src[50:] = True
+    out = resample_nearest(src, 10)
+    assert out.shape == (10, 1)
+    assert list(np.flatnonzero(out[:, 0])) == [5, 6, 7, 8, 9]
 
 
-def test_resample_accepts_the_real_femto14_mismatch():
-    # 197/30 = 6.567 s vs 327/50 = 6.540 s -> 27 ms apart, the actual pair we ship against
-    out = resample_nearest(np.zeros((197, 2), dtype=bool), 30.0, 327, 50.0)
-    assert out.shape == (327, 2)
+def test_resample_refuses_degenerate_lengths():
+    with pytest.raises(ValueError, match="no frames"):
+        resample_nearest(np.zeros((0, 2), dtype=bool), 10)
+    with pytest.raises(ValueError, match="at least one frame"):
+        resample_nearest(np.zeros((5, 1), dtype=bool), 0)
 
 
-def test_resample_refuses_nonpositive_fps():
-    with pytest.raises(ValueError, match="fps must be positive"):
-        resample_nearest(np.zeros((5, 1), dtype=bool), 0.0, 5, 50.0)
+def test_inferred_fps_reads_as_a_familiar_rate_on_the_real_pair():
+    # 197 schedule frames onto femto14_w_obj (327 frames at 50 fps)
+    assert inferred_fps(197, 327, 50.0) == pytest.approx(30.12, abs=0.01)
+
+
+def test_inferred_fps_exposes_a_borrowed_schedule():
+    # the same schedule against femto14_box36 (555 frames at 50 fps, 11.1 s): no capture ran at 17.7
+    assert inferred_fps(197, 555, 50.0) == pytest.approx(17.75, abs=0.01)
 
 
 #########################################################################################

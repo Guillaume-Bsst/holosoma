@@ -105,36 +105,43 @@ def load_mpc_schedule(path: str) -> ContactSchedule:
     )
 
 
-def resample_nearest(
-    active: np.ndarray,
-    src_fps: float,
-    dst_num_frames: int,
-    dst_fps: float,
-    *,
-    max_duration_mismatch: float = 0.1,
-) -> np.ndarray:
-    """Put ``active`` (T_src, ...) on a (dst_num_frames, ...) timeline by nearest neighbour in TIME.
+def resample_nearest(active: np.ndarray, dst_num_frames: int) -> np.ndarray:
+    """Put ``active`` (T_src, ...) on a (dst_num_frames, ...) timeline: proportional, nearest frame.
 
     Nearest, never interpolated: these are booleans, and a blended contact is not a contact. Same
     choice ``merge_training_npz.py`` makes for the bool/index fields.
 
-    ``max_duration_mismatch`` (seconds) guards against pairing a schedule with the wrong clip. The
-    schedule file carries no cadence of its own, so nothing else would catch it: indices would just
-    clamp at the end and the tail of the clip would silently inherit the schedule's last frame.
+    No cadence is needed. Both files describe the same take, so their durations are equal and the
+    frame-rate-consistent mapping ``round(i * T_src / T_dst)`` falls out of that alone. Passing the
+    schedule's fps explicitly was measured to move at most one source frame (1 to 5 contact frames
+    out of 327 on the femto14 pair, all at phase edges) -- sub-frame noise, not worth a required
+    parameter.
+
+    Nothing here verifies that the two files ARE the same take, because nothing cheap can: a
+    duration check is necessary but not sufficient, and a geometric check (are the hands near the
+    box when the schedule says contact?) was measured to score a MISMATCHED clip higher than the
+    correct one, since a similar motion stretched onto a similar motion still lines up. The caller
+    passes both paths on one command line; ``inferred_fps`` gives them the diagnostic to eyeball.
     """
-    if src_fps <= 0 or dst_fps <= 0:
-        raise ValueError(f"fps must be positive, got src={src_fps}, dst={dst_fps}")
     src_num_frames = active.shape[0]
-    src_duration, dst_duration = src_num_frames / src_fps, dst_num_frames / dst_fps
-    if abs(src_duration - dst_duration) > max_duration_mismatch:
-        raise ValueError(
-            f"schedule lasts {src_duration:.3f}s ({src_num_frames} frames at {src_fps:g} fps) but "
-            f"the clip lasts {dst_duration:.3f}s ({dst_num_frames} at {dst_fps:g} fps) -- more than "
-            f"{max_duration_mismatch:g}s apart, so this schedule was not baked for this clip."
-        )
-    times = np.arange(dst_num_frames) / dst_fps
-    idx = np.rint(times * src_fps).astype(np.int64).clip(0, src_num_frames - 1)
-    return active[idx]
+    if src_num_frames == 0:
+        raise ValueError("contact schedule has no frames")
+    if dst_num_frames <= 0:
+        raise ValueError(f"target timeline must have at least one frame, got {dst_num_frames}")
+    idx = np.rint(np.arange(dst_num_frames) * src_num_frames / dst_num_frames)
+    return active[idx.astype(np.int64).clip(0, src_num_frames - 1)]
+
+
+def inferred_fps(src_num_frames: int, dst_num_frames: int, dst_fps: float) -> float:
+    """The cadence the schedule must have had for both files to cover the same duration.
+
+    Diagnostic, not a gate. On a correctly paired schedule it reads as a familiar rate (30.12 for
+    femto14); on a schedule borrowed from another take it reads as something no capture ever ran at
+    (17.7 for the same schedule against an 11.1 s clip), which is visible in the run log.
+    """
+    if dst_num_frames <= 0:
+        raise ValueError(f"target timeline must have at least one frame, got {dst_num_frames}")
+    return src_num_frames * dst_fps / dst_num_frames
 
 
 def ramp_activation(active: np.ndarray, num_ramp_frames: int) -> np.ndarray:

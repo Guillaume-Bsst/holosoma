@@ -47,7 +47,6 @@ class MotionLoader:
         robot_joint_names: list[str],
         device: str = "cpu",
         contact_schedule_file: str = "",
-        contact_schedule_fps: float = 0.0,
         contact_schedule_ramp_frames: int = 0,
     ):
         # Resolve the motion file path using importlib.resources
@@ -61,11 +60,9 @@ class MotionLoader:
         self._joint_indexes = joint_indexes
         self._body_indexes = body_indexes
         self.time_step_total = self._joint_pos.shape[0]
-        self._load_contact_schedule(
-            contact_schedule_file, contact_schedule_fps, contact_schedule_ramp_frames, device
-        )
+        self._load_contact_schedule(contact_schedule_file, contact_schedule_ramp_frames, device)
 
-    def _load_contact_schedule(self, path: str, fps: float, ramp_frames: int, device: str) -> None:
+    def _load_contact_schedule(self, path: str, ramp_frames: int, device: str) -> None:
         """Fold an externally supplied MPC contact schedule onto this clip's timeline.
 
         Takes precedence over whatever contact fields the motion NPZ carries: passing a schedule is
@@ -80,30 +77,31 @@ class MotionLoader:
             self._schedule_object_support = torch.zeros(0, device=device)
             return
 
-        from holosoma.utils.contact_schedule import load_mpc_schedule, ramp_activation, resample_nearest
+        from holosoma.utils.contact_schedule import (
+            inferred_fps,
+            load_mpc_schedule,
+            ramp_activation,
+            resample_nearest,
+        )
 
-        if fps <= 0.0:
-            raise ValueError(
-                "contact_schedule_fps must be set (>0) alongside contact_schedule_file: the "
-                "schedule NPZ carries no cadence, and guessing it shifts every contact phase in "
-                "silence."
-            )
         schedule = load_mpc_schedule(resolve_data_file_path(path))
         clip_fps = float(self.fps)
 
         def to_clip(active: np.ndarray) -> torch.Tensor:
             flat = active.reshape(active.shape[0], -1)
-            resampled = resample_nearest(flat, fps, n_frames, clip_fps)
-            weights = ramp_activation(resampled, ramp_frames)
+            weights = ramp_activation(resample_nearest(flat, n_frames), ramp_frames)
             return torch.tensor(weights, dtype=torch.float32, device=device).view(n_frames, -1)
 
         self._schedule_hand_contact = to_clip(schedule.hand_object)  # (T, 2)
         self._schedule_foot_ground = to_clip(schedule.foot_ground)  # (T, 2)
         self._schedule_object_ground = to_clip(schedule.object_ground[:, None])[:, 0]  # (T,)
         self._schedule_object_support = to_clip(schedule.object_support[:, None])[:, 0]  # (T,)
+        # The inferred cadence is the one diagnostic worth printing: a correctly paired schedule
+        # reads as a familiar rate, a borrowed one as a rate no capture ever ran at.
         logger.info(
-            f"[contact_schedule] {path}: {schedule.num_frames} frames at {fps:g} fps -> {n_frames} "
-            f"at {clip_fps:g} fps, hands in contact on "
+            f"[contact_schedule] {path}: {schedule.num_frames} frames -> {n_frames} at "
+            f"{clip_fps:g} fps (inferred schedule cadence "
+            f"{inferred_fps(schedule.num_frames, n_frames, clip_fps):.2f} fps), hands in contact on "
             f"{float((self._schedule_hand_contact.amax(dim=-1) > 0).float().mean()):.0%} of frames"
             + (f", ramp {ramp_frames} frames" if ramp_frames > 0 else "")
             + (f", pairs ignored (never active): {list(schedule.unmapped)}" if schedule.unmapped else "")
@@ -509,7 +507,6 @@ class MultiMotionLoader:
         robot_joint_names: list[str],
         device: str = "cpu",
         contact_schedule_file: str = "",
-        contact_schedule_fps: float = 0.0,
         contact_schedule_ramp_frames: int = 0,
     ):
         # A schedule is baked for ONE take. Applied to a concatenation of clips it would line up
@@ -521,7 +518,7 @@ class MultiMotionLoader:
                 "single take, so there is no correct way to apply one to a concatenation of clips. "
                 "Use motion_file with the clip the schedule was baked for."
             )
-        del contact_schedule_fps, contact_schedule_ramp_frames  # only meaningful with a file
+        del contact_schedule_ramp_frames  # only meaningful with a file
         self.has_contact_schedule = False
         # Support comma-separated directories for combining multiple datasets
         dirs = [d.strip() for d in motion_dir.split(",")]
@@ -895,7 +892,6 @@ class MotionCommand(CommandTermBase):
                 robot_joint_names,
                 device=self.device,
                 contact_schedule_file=self.motion_cfg.contact_schedule_file,
-                contact_schedule_fps=self.motion_cfg.contact_schedule_fps,
                 contact_schedule_ramp_frames=self.motion_cfg.contact_schedule_ramp_frames,
             )
         else:
@@ -905,7 +901,6 @@ class MotionCommand(CommandTermBase):
                 robot_joint_names,
                 device=self.device,
                 contact_schedule_file=self.motion_cfg.contact_schedule_file,
-                contact_schedule_fps=self.motion_cfg.contact_schedule_fps,
                 contact_schedule_ramp_frames=self.motion_cfg.contact_schedule_ramp_frames,
             )
 
