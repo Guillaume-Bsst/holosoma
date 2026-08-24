@@ -157,10 +157,24 @@ class MotionLoader:
                 object_quat_w = torch.tensor(data["object_quat_w"], dtype=torch.float32, device=device)
                 self._object_quat_w = object_quat_w[:, [1, 2, 3, 0]]  # Change to xyzw
                 self._object_lin_vel_w = torch.tensor(data["object_lin_vel_w"], dtype=torch.float32, device=device)
+                # Reference ANGULAR velocity. Written by the retargeting converter
+                # (convert_data_format_mj.py) but absent from older clips, so it is optional on top
+                # of has_object: fall back to zeros of the right shape, which keeps every concat /
+                # interpolation path below unconditional. Consumers guard on has_object_ang_vel
+                # rather than on the tensor being non-empty.
+                self.has_object_ang_vel = "object_ang_vel_w" in data
+                if self.has_object_ang_vel:
+                    self._object_ang_vel_w = torch.tensor(
+                        data["object_ang_vel_w"], dtype=torch.float32, device=device
+                    )
+                else:
+                    self._object_ang_vel_w = torch.zeros_like(self._object_lin_vel_w)
             else:
+                self.has_object_ang_vel = False
                 self._object_pos_w = torch.zeros(0, 3, device=device)
                 self._object_quat_w = torch.zeros(0, 4, device=device)
                 self._object_lin_vel_w = torch.zeros(0, 3, device=device)
+                self._object_ang_vel_w = torch.zeros(0, 3, device=device)
 
             # Ground-truth hand<->object contact from the retargeting pipeline's own point-cloud
             # interaction fields (witness/distance/normal + active-in-margin, real mesh-to-mesh SDF
@@ -272,6 +286,10 @@ class MotionLoader:
         return self._object_lin_vel_w[:]
 
     @property
+    def object_ang_vel_w(self) -> torch.Tensor:
+        return self._object_ang_vel_w[:]
+
+    @property
     def object_ref_contact(self) -> torch.Tensor:
         return self._object_ref_contact[:]
 
@@ -335,6 +353,7 @@ class MotionLoader:
                     ("object_pos", "_object_pos_w"),
                     ("object_quat", "_object_quat_w"),
                     ("object_lin_vel", "_object_lin_vel_w"),
+                    ("object_ang_vel", "_object_ang_vel_w"),
                 ]
             )
 
@@ -470,10 +489,16 @@ class MultiMotionLoader:
             self._object_pos_w = torch.cat([ld._object_pos_w for ld in loaders], dim=0)
             self._object_quat_w = torch.cat([ld._object_quat_w for ld in loaders], dim=0)
             self._object_lin_vel_w = torch.cat([ld._object_lin_vel_w for ld in loaders], dim=0)
+            self._object_ang_vel_w = torch.cat([ld._object_ang_vel_w for ld in loaders], dim=0)
+            # Usable only if EVERY clip carries it (same rule as has_gt_contact): a mix would train
+            # the angular term against zeros on the clips that lack it.
+            self.has_object_ang_vel = all(ld.has_object_ang_vel for ld in loaders)
         else:
+            self.has_object_ang_vel = False
             self._object_pos_w = torch.zeros(0, 3, device=device)
             self._object_quat_w = torch.zeros(0, 4, device=device)
             self._object_lin_vel_w = torch.zeros(0, 3, device=device)
+            self._object_ang_vel_w = torch.zeros(0, 3, device=device)
 
         # Ground-truth contact (see MotionLoader): only usable if ALL clips carry it.
         self.has_gt_contact = self.has_object and all(ld.has_gt_contact for ld in loaders)
@@ -543,6 +568,10 @@ class MultiMotionLoader:
         return self._object_lin_vel_w[:]
 
     @property
+    def object_ang_vel_w(self) -> torch.Tensor:
+        return self._object_ang_vel_w[:]
+
+    @property
     def object_ref_contact(self) -> torch.Tensor:
         return self._object_ref_contact[:]
 
@@ -574,6 +603,7 @@ class MultiMotionLoader:
                     ("object_pos", "_object_pos_w"),
                     ("object_quat", "_object_quat_w"),
                     ("object_lin_vel", "_object_lin_vel_w"),
+                    ("object_ang_vel", "_object_ang_vel_w"),
                 ]
             )
 
@@ -1499,6 +1529,10 @@ class MotionCommand(CommandTermBase):
     def object_lin_vel_w(self) -> torch.Tensor:
         return self.motion.object_lin_vel_w[self.time_steps]
 
+    @property
+    def object_ang_vel_w(self) -> torch.Tensor:
+        return self.motion.object_ang_vel_w[self.time_steps]
+
     #########################################################################################
     ## Object from simulator
     #########################################################################################
@@ -1513,6 +1547,10 @@ class MotionCommand(CommandTermBase):
     @property
     def simulator_object_lin_vel_w(self) -> torch.Tensor:
         return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 7:10]
+
+    @property
+    def simulator_object_ang_vel_w(self) -> torch.Tensor:
+        return self._env.simulator.all_root_states[self.object_indices_in_simulator][:, 10:13]
 
     #########################################################################################
     ## Support (table): STATIC object. World pose = clip pose + env origin (the actor is pinned
@@ -1796,6 +1834,9 @@ class MotionCommand(CommandTermBase):
             self.metrics["motion/object_lin_vel_error"] = torch.norm(
                 self.object_lin_vel_w - self.simulator_object_lin_vel_w, dim=-1
             )
+            self.metrics["motion/object_ang_vel_error"] = torch.norm(
+                self.object_ang_vel_w - self.simulator_object_ang_vel_w, dim=-1
+            )
             self.metrics["motion/object_height"] = sim_obj[:, 2]
             self.metrics["motion/weld_assist_prob"] = torch.full_like(hand_dist, float(self.weld_assist_prob))
             # box physicality curriculum: alpha (1=kinematic, 0=physical) + the success EMA driving it
@@ -1922,10 +1963,12 @@ class MotionCommand(CommandTermBase):
             object_pos = self.motion._object_pos_w[motion_idx].to(self.device)
             object_quat = self.motion._object_quat_w[motion_idx].to(self.device)
             object_lin_vel = self.motion._object_lin_vel_w[motion_idx].to(self.device)
+            object_ang_vel = self.motion._object_ang_vel_w[motion_idx].to(self.device)
         else:
             object_pos = torch.zeros(0, 3, device=self.device, dtype=torch.float32)
             object_quat = torch.zeros(0, 4, device=self.device, dtype=torch.float32)
             object_lin_vel = torch.zeros(0, 3, device=self.device, dtype=torch.float32)
+            object_ang_vel = torch.zeros(0, 3, device=self.device, dtype=torch.float32)
 
         return {
             "joint_pos": joint_pos.clone(),
@@ -1941,6 +1984,7 @@ class MotionCommand(CommandTermBase):
             "object_pos": object_pos,
             "object_quat": object_quat,
             "object_lin_vel": object_lin_vel,
+            "object_ang_vel": object_ang_vel,
         }
 
     def _add_transition_to_motion(self, default_state: dict[str, torch.Tensor], num_steps: int, prepend: bool) -> None:
@@ -2077,6 +2121,7 @@ class MotionCommand(CommandTermBase):
             state["object_pos"] = self.motion._object_pos_w[idx].to(device=device, dtype=dtype)
             state["object_quat"] = self.motion._object_quat_w[idx].to(device=device, dtype=dtype)
             state["object_lin_vel"] = self.motion._object_lin_vel_w[idx].to(device=device, dtype=dtype)
+            state["object_ang_vel"] = self.motion._object_ang_vel_w[idx].to(device=device, dtype=dtype)
         return state
 
     def _default_motion_state(
@@ -2101,6 +2146,7 @@ class MotionCommand(CommandTermBase):
             state["object_pos"] = default_state["object_pos"].to(device=device, dtype=dtype)
             state["object_quat"] = default_state["object_quat"].to(device=device, dtype=dtype)
             state["object_lin_vel"] = default_state["object_lin_vel"].to(device=device, dtype=dtype)
+            state["object_ang_vel"] = default_state["object_ang_vel"].to(device=device, dtype=dtype)
         return state
 
     def _build_transition_segments(
@@ -2128,6 +2174,7 @@ class MotionCommand(CommandTermBase):
         if self.motion.has_object:
             segments["object_pos"] = _lerp(start["object_pos"], target["object_pos"], alphas_joint)
             segments["object_lin_vel"] = _lerp(start["object_lin_vel"], target["object_lin_vel"], alphas_joint)
+            segments["object_ang_vel"] = _lerp(start["object_ang_vel"], target["object_ang_vel"], alphas_joint)
             segments["object_quat"] = self._slerp_quat_sequence(
                 start["object_quat"].unsqueeze(0), target["object_quat"].unsqueeze(0), alphas
             ).squeeze(1)
