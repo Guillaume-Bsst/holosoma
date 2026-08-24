@@ -277,9 +277,8 @@ g1_27dof_wbt_fast_sac_w_object = replace(
 # apart. Each preset is its base experiment plus the opted-in blocks; the base presets above are
 # untouched. Each block adds reward terms AND the matching critic-only observations.
 #
-# Note the reward bases differ by robot, because the base experiments already do:
-# g1_29dof_wbt_w_object_actor carries the actor (C-D lite) reward, g1_27dof_wbt_w_object_actor
-# inherits the plain w_object reward and only overrides the observation.
+# Both robots take the same reward: since the C-D lite term was removed there is no longer an
+# actor-specific reward, and the _actor variants differ from their base by the OBSERVATION only.
 
 g1_29dof_wbt_w_object_actor_objvel = replace(
     g1_29dof_wbt_w_object_actor,

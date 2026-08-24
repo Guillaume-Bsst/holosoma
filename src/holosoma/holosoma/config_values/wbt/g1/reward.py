@@ -113,12 +113,6 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
 g1_29dof_wbt_reward_w_object_actor = RewardManagerCfg(
     terms={
         **g1_29dof_wbt_reward_w_object.terms,
-        # C-D lite: relative hand<->object proximity, beta-weighted (refiner, small weight).
-        "motion_relative_hand_object_position_error_exp": RewardTermCfg(
-            func="holosoma.managers.reward.terms.wbt:motion_relative_hand_object_position_error_exp",
-            params={"sigma": 0.3},
-            weight=0.3,
-        ),
     }
 )
 
@@ -150,8 +144,8 @@ _REW = "holosoma.managers.reward.terms.wbt:"
 # rather than a signal -- the same failure the neutral guards were fixed for.
 #
 # Weight 0.5 each: a shaping term next to the pose terms at 1.0, not a competitor. Note the object
-# side of the base preset now weighs 2.3 (pose 1.0 + 1.0, C-D lite 0.3), so this block is a ~43%
-# increase in object-side mass -- it was ~17% when the removed contact rewards were still there.
+# side of the base preset weighs 2.0 (pose 1.0 + 1.0), so this block is a 50% increase in
+# object-side mass -- it was ~17% when the removed contact rewards were still there.
 object_velocity_reward_terms = {
     "object_global_ref_lin_vel_error_exp": RewardTermCfg(
         func=f"{_REW}object_global_ref_lin_vel_error_exp",
@@ -210,23 +204,21 @@ def _with_blocks(base: RewardManagerCfg, *blocks: dict) -> RewardManagerCfg:
     return RewardManagerCfg(terms=terms)
 
 
-# On the w_object base -- what the 27dof object experiments actually run.
 g1_29dof_wbt_reward_w_object_objvel = _with_blocks(g1_29dof_wbt_reward_w_object, object_velocity_reward_terms)
 g1_29dof_wbt_reward_w_object_objcontact = _with_blocks(g1_29dof_wbt_reward_w_object, object_contact_reward_terms)
 g1_29dof_wbt_reward_w_object_objvel_objcontact = _with_blocks(
     g1_29dof_wbt_reward_w_object, object_velocity_reward_terms, object_contact_reward_terms
 )
 
-# On the w_object_actor base (keeps the C-D lite term) -- what the 29dof actor experiments run.
-g1_29dof_wbt_reward_w_object_actor_objvel = _with_blocks(
-    g1_29dof_wbt_reward_w_object_actor, object_velocity_reward_terms
-)
-g1_29dof_wbt_reward_w_object_actor_objcontact = _with_blocks(
-    g1_29dof_wbt_reward_w_object_actor, object_contact_reward_terms
-)
-g1_29dof_wbt_reward_w_object_actor_objvel_objcontact = _with_blocks(
-    g1_29dof_wbt_reward_w_object_actor, object_velocity_reward_terms, object_contact_reward_terms
-)
+# The _actor variants are ALIASES, not copies. Since the C-D lite term was removed,
+# g1_29dof_wbt_reward_w_object_actor is term-for-term identical to g1_29dof_wbt_reward_w_object --
+# the _actor experiments now differ from the base by their OBSERVATION only (the actor sees the
+# object pose), not by their reward. The names are kept so experiment presets and the registry keep
+# reading as they did; binding them rather than rebuilding them keeps that identity impossible to
+# drift.
+g1_29dof_wbt_reward_w_object_actor_objvel = g1_29dof_wbt_reward_w_object_objvel
+g1_29dof_wbt_reward_w_object_actor_objcontact = g1_29dof_wbt_reward_w_object_objcontact
+g1_29dof_wbt_reward_w_object_actor_objvel_objcontact = g1_29dof_wbt_reward_w_object_objvel_objcontact
 
 __all__ = [
     "g1_29dof_wbt_reward_w_object_objvel",

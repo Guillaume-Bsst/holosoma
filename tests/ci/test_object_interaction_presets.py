@@ -178,15 +178,28 @@ def test_experiments_registered_for_both_robots(suffix):
 
 
 @pytest.mark.parametrize("suffix", SUFFIXES)
-def test_each_robot_keeps_its_own_reward_base(suffix):
-    # 29dof carries the actor (C-D lite) reward, 27dof the plain w_object one -- as the base
-    # experiments already do; the feature blocks must not silently change that
+def test_both_robots_take_the_same_reward(suffix):
+    # There is no actor-specific reward any more: the _actor variants differ from their base by the
+    # OBSERVATION only. The _actor reward names are kept as aliases, so this pins that they really
+    # are the same object and cannot drift back apart.
     e29 = getattr(experiment, "g1_29dof_wbt_w_object_actor_" + suffix)
     e27 = getattr(experiment, "g1_27dof_wbt_w_object_actor_" + suffix)
-    assert e29.reward is getattr(reward, "g1_29dof_wbt_reward_w_object_actor_" + suffix)
-    assert e27.reward is getattr(reward, "g1_29dof_wbt_reward_w_object_" + suffix)
-    assert "motion_relative_hand_object_position_error_exp" in e29.reward.terms
-    assert "motion_relative_hand_object_position_error_exp" not in e27.reward.terms
+    base = getattr(reward, "g1_29dof_wbt_reward_w_object_" + suffix)
+    assert e29.reward is base
+    assert e27.reward is base
+    assert getattr(reward, "g1_29dof_wbt_reward_w_object_actor_" + suffix) is base
+
+
+def test_the_removed_hand_object_term_is_gone_everywhere():
+    # motion_relative_hand_object_position_error_exp claimed to be gated on contact (beta -> 0 =>
+    # reward -> 1) but normalised its own gate away: w = beta / beta.sum() cancels beta's scale, so
+    # it paid the same full-strength position error at every hand-object distance in the task's
+    # range. Removed rather than fixed.
+    gone = "motion_relative_hand_object_position_error_exp"
+    for key, exp in experiment_registry.DEFAULTS.items():
+        if exp is None or "wbt" not in key:
+            continue
+        assert gone not in exp.reward.terms, key
 
 
 @pytest.mark.parametrize("suffix", SUFFIXES)
@@ -201,3 +214,19 @@ def test_both_block_experiment_is_the_union():
     vel = _critic(experiment.g1_29dof_wbt_w_object_actor_objvel)
     contact = _critic(experiment.g1_29dof_wbt_w_object_actor_objcontact)
     assert set(both) == set(vel) | set(contact)
+
+
+def test_the_actor_sees_the_box_and_only_the_box():
+    # The static support is not an actor observation. On a clip with no table -- every preset's
+    # default clip -- the loader falls back to _support_pos_w = zeros, so support_pos_b returns
+    # R^T(0 - p_torso): the robot's own GLOBAL pose in its torso frame, not a table. Feeding that to
+    # the DEPLOYED policy lets it key on absolute position in the scene instead of on the box.
+    actor = observation.actor_obs_w_object.terms
+    assert "obj_pos_b" in actor and "obj_ori_b" in actor
+    for leaked in ("support_pos_b", "support_ori_b"):
+        assert leaked not in actor
+    for key, exp in experiment_registry.DEFAULTS.items():
+        if exp is None or "wbt" not in key:
+            continue
+        group = exp.observation.groups["actor_obs"].terms
+        assert "support_pos_b" not in group and "support_ori_b" not in group, key

@@ -1,9 +1,8 @@
 """Pure math backing the optional object-interaction reward terms.
 
 Deliberately free of any env/simulator handle: these are plain tensor functions, so they can be
-unit-tested without a simulator, the same way ``utils/contact_targets.py`` is (see
-``tests/ci/test_contact_targets.py``). The thin wrappers that gather the sim/reference tensors live
-in ``managers/reward/terms/wbt.py``.
+unit-tested without a simulator. The thin wrappers that gather the sim/reference tensors live in
+``managers/reward/terms/wbt.py``.
 """
 
 from __future__ import annotations
