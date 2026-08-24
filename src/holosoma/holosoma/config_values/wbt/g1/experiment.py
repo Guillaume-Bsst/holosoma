@@ -270,7 +270,60 @@ g1_27dof_wbt_fast_sac_w_object = replace(
     ),
 )
 
+# ================================================================================================
+# Optional object-training features: object velocity tracking (objvel) and HDMI contact (objcontact)
+# ================================================================================================
+# Independent and cumulative, so a run can carry one, the other, or both and the effect can be told
+# apart. Each preset is its base experiment plus the opted-in blocks; the base presets above are
+# untouched. Each block adds reward terms AND the matching critic-only observations.
+#
+# Note the reward bases differ by robot, because the base experiments already do:
+# g1_29dof_wbt_w_object_actor carries the actor (C-D lite) reward, g1_27dof_wbt_w_object_actor
+# inherits the plain w_object reward and only overrides the observation.
+
+g1_29dof_wbt_w_object_actor_objvel = replace(
+    g1_29dof_wbt_w_object_actor,
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_objvel,
+    reward=reward.g1_29dof_wbt_reward_w_object_actor_objvel,
+)
+
+g1_29dof_wbt_w_object_actor_objcontact = replace(
+    g1_29dof_wbt_w_object_actor,
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_objcontact,
+    reward=reward.g1_29dof_wbt_reward_w_object_actor_objcontact,
+)
+
+g1_29dof_wbt_w_object_actor_objvel_objcontact = replace(
+    g1_29dof_wbt_w_object_actor,
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_objvel_objcontact,
+    reward=reward.g1_29dof_wbt_reward_w_object_actor_objvel_objcontact,
+)
+
+g1_27dof_wbt_w_object_actor_objvel = replace(
+    g1_27dof_wbt_w_object_actor,
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_objvel,
+    reward=reward.g1_29dof_wbt_reward_w_object_objvel,
+)
+
+g1_27dof_wbt_w_object_actor_objcontact = replace(
+    g1_27dof_wbt_w_object_actor,
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_objcontact,
+    reward=reward.g1_29dof_wbt_reward_w_object_objcontact,
+)
+
+g1_27dof_wbt_w_object_actor_objvel_objcontact = replace(
+    g1_27dof_wbt_w_object_actor,
+    observation=observation.g1_29dof_wbt_observation_w_object_actor_objvel_objcontact,
+    reward=reward.g1_29dof_wbt_reward_w_object_objvel_objcontact,
+)
+
 __all__ = [
+    "g1_29dof_wbt_w_object_actor_objvel",
+    "g1_29dof_wbt_w_object_actor_objcontact",
+    "g1_29dof_wbt_w_object_actor_objvel_objcontact",
+    "g1_27dof_wbt_w_object_actor_objvel",
+    "g1_27dof_wbt_w_object_actor_objcontact",
+    "g1_27dof_wbt_w_object_actor_objvel_objcontact",
     "g1_29dof_wbt",
     "g1_29dof_wbt_fast_sac",
     "g1_29dof_wbt_fast_sac_w_object",

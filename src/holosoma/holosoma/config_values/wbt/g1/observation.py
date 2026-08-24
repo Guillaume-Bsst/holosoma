@@ -194,8 +194,83 @@ g1_29dof_wbt_observation_w_object_actor = ObservationManagerCfg(
     },
 )
 
+# ================================================================================================
+# Optional object-training feature blocks (critic-only)
+# ================================================================================================
+# The critic is never deployed -- it exists to estimate the value during training -- so anything
+# that reduces the variance of that estimate is free with respect to the real robot. That is the
+# same asymmetry that already gives it base_lin_vel / obj_lin_vel_b / robot_body_pos_b.
+#
+# NONE of these may be added to the actor group: measured contact forces do not exist on hardware
+# (no force sensing at the G1 wrists), and object velocity is not something the perception pipeline
+# delivers cleanly.
+_OBS = "holosoma.managers.observation.terms.wbt:"
+
+# Block A -- object VELOCITY. Pairs with object_velocity_reward_terms: the critic sees the quantity
+# those rewards are computed from.
+critic_obs_object_velocity_terms = {
+    # Same term NAME as the inherited one, so the critic vector keeps its width and its alphabetical
+    # slot, but pointed at the rotation-only implementation. The inherited obj_lin_vel_b passes a
+    # velocity to subtract_frame_transforms, which also subtracts the reference body's world
+    # position: it returns R^T (v_obj - p_torso), a ~1.8 m/s offset on a ~0.3 m/s carry that drifts
+    # with the robot's position -- a motionless box reads as moving. Scoped to these presets rather
+    # than fixed in place so existing w_object runs keep the input they were trained on.
+    "obj_lin_vel_b": ObsTermCfg(
+        func=f"{_OBS}obj_lin_vel_b_rotated",
+        scale=1.0,
+        noise=0.0,
+    ),
+    "obj_ang_vel_b": ObsTermCfg(
+        func=f"{_OBS}obj_ang_vel_b",
+        scale=1.0,
+        noise=0.0,
+    ),
+}
+
+# Block B -- CONTACT. Pairs with object_contact_reward_terms: what the hands actually bear, next to
+# what the reference prescribes. 1 N threshold = touching at all (the reward uses a much higher
+# threshold, 10 N, to mean bearing load).
+critic_obs_object_contact_terms = {
+    "obj_contact_flag": ObsTermCfg(
+        func=f"{_OBS}obj_contact_flag",
+        params={"force_threshold": 1.0},
+        scale=1.0,
+        noise=0.0,
+    ),
+}
+
+
+def _w_object_actor_observation(*critic_blocks: dict) -> ObservationManagerCfg:
+    """Actor sees the noisy object pose; critic gets the privileged set plus the opted-in blocks."""
+    critic_terms = critic_obs_w_object_terms.copy()
+    for block in critic_blocks:
+        critic_terms.update(block)
+    return ObservationManagerCfg(
+        groups={
+            "actor_obs": actor_obs_w_object,
+            "critic_obs": ObsGroupCfg(
+                concatenate=True,
+                enable_noise=False,
+                history_length=1,
+                terms=critic_terms,
+            ),
+        },
+    )
+
+
+g1_29dof_wbt_observation_w_object_actor_objvel = _w_object_actor_observation(critic_obs_object_velocity_terms)
+g1_29dof_wbt_observation_w_object_actor_objcontact = _w_object_actor_observation(critic_obs_object_contact_terms)
+g1_29dof_wbt_observation_w_object_actor_objvel_objcontact = _w_object_actor_observation(
+    critic_obs_object_velocity_terms, critic_obs_object_contact_terms
+)
+
 __all__ = [
+    "critic_obs_object_contact_terms",
+    "critic_obs_object_velocity_terms",
     "g1_29dof_wbt_observation",
     "g1_29dof_wbt_observation_w_object",
     "g1_29dof_wbt_observation_w_object_actor",
+    "g1_29dof_wbt_observation_w_object_actor_objvel",
+    "g1_29dof_wbt_observation_w_object_actor_objcontact",
+    "g1_29dof_wbt_observation_w_object_actor_objvel_objcontact",
 ]
