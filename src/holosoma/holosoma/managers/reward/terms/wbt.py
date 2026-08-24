@@ -126,6 +126,99 @@ def object_global_ref_orientation_error_exp(env: WholeBodyTrackingManager, sigma
     return torch.exp(-error / sigma**2)
 
 
+def object_global_ref_lin_vel_error_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
+    """Track the object's LINEAR velocity against the reference clip.
+
+    The global pose terms above constrain where the object is, not how it is moving to get there.
+    Two trajectories that hit the same waypoints can differ by a jerked carry versus a smooth one,
+    and only the second survives contact: velocity error is what the box's momentum does to the
+    grasp. This is the object-side counterpart of ``motion_global_body_lin_vel``.
+
+    Not part of HDMI, whose reward table carries only object pose and contact.
+    """
+    from holosoma.utils.object_interaction import velocity_tracking_reward
+
+    mc = _get_motion_command_and_assert_type(env)
+    return velocity_tracking_reward(mc.object_lin_vel_w, mc.simulator_object_lin_vel_w, sigma)
+
+
+def object_global_ref_ang_vel_error_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
+    """Track the object's ANGULAR velocity against the reference clip.
+
+    The rotational half of ``object_global_ref_lin_vel_error_exp``, and the one that bites: putting
+    the box into a spin is exactly the failure ``object_flat_contact_quality_exp`` is built to
+    prevent, and the orientation-error term only sees it once the box has already turned.
+
+    Neutral (1) when the loaded motion carries no reference angular velocity (clips baked before the
+    converter wrote ``object_ang_vel_w``) -- otherwise the term would train the policy to hold the
+    box still against a zeros reference. Constant, so it adds no gradient.
+    """
+    from holosoma.utils.object_interaction import velocity_tracking_reward
+
+    mc = _get_motion_command_and_assert_type(env)
+    if not mc.motion.has_object_ang_vel:
+        return torch.ones(env.num_envs, device=env.device)
+    return velocity_tracking_reward(mc.object_ang_vel_w, mc.simulator_object_ang_vel_w, sigma)
+
+
+def object_contact_force_match_exp(
+    env: WholeBodyTrackingManager,
+    sigma_pos: float,
+    sigma_force: float,
+    force_threshold: float,
+    max_force_bonus: float = 2.0,
+) -> torch.Tensor:
+    """HDMI's interaction reward: is the hand REALLY pressing on the box where the reference says?
+
+    Port of the contact reward of HDMI (arXiv:2509.16757, Table I weight 5.0), gated by the binary
+    reference contact indicator ``c_t``. See ``utils.object_interaction.hdmi_contact_reward`` for the
+    formula and for the two deviations (capped force factor, 0 rather than 1 off-gate).
+
+    What it adds over the contact terms already here: ``object_surface_contact_error_exp`` and
+    ``object_flat_contact_quality_exp`` are both purely KINEMATIC -- they grade where the hand sits
+    relative to the box surface. A hand can satisfy them while resting a millimetre off the box,
+    carrying nothing. This term reads the measured contact force, so it can tell a grip that bears
+    load from a pose that merely looks like one.
+
+    Neutral (1) without a reference witness or without resolved anchors, like its kinematic sibling.
+    """
+    from holosoma.utils.grasp_settle import gather_anchor
+    from holosoma.utils.object_interaction import hdmi_contact_reward
+    from holosoma.utils.rotations import quat_apply
+
+    mc = _get_motion_command_and_assert_type(env)
+    if mc._anchor_body_indexes is None or not mc.motion.has_gt_witness:
+        return torch.ones(env.num_envs, device=env.device)
+
+    anchor_idx, ref_contact = mc._lookup_ref_contact(mc.time_steps, mc.anchor_pos_w, mc.object_pos_w)
+    a_pos, _ = gather_anchor(mc.robot_anchor_pos_w, mc.robot_anchor_quat_w, anchor_idx)
+
+    # p_target: the reference witness point (box-local) carried on the CURRENT sim box pose, the
+    # same convention as object_surface_contact_error_exp. Tracking the box's own pose is the job of
+    # object_global_ref_*; this term grades the hand against the box that is actually there.
+    witness_local = mc.motion.object_ref_witness_local[mc.time_steps]  # (N, 3) box-local
+    p_target = mc.simulator_object_pos_w + quat_apply(mc.simulator_object_quat_w, witness_local, w_last=True)
+    distance = torch.norm(a_pos - p_target, dim=-1)
+
+    # ||F|| on the contact hand, maxed over the sensor history like UndesiredContacts does: contact
+    # forces are intermittent across substeps, so an instantaneous read makes the bonus flicker on a
+    # grip that is in fact steady.
+    forces = env.simulator.contact_forces_history[:, :, mc._anchor_body_indexes]  # (N, H, A, 3)
+    force_per_anchor = torch.max(torch.norm(forces, dim=-1), dim=1)[0]  # (N, A)
+    env_ids = torch.arange(env.num_envs, device=env.device)
+    force = force_per_anchor[env_ids, anchor_idx.clamp(0, force_per_anchor.shape[1] - 1)]  # (N,)
+
+    return hdmi_contact_reward(
+        distance,
+        force,
+        ref_contact,
+        sigma_pos=sigma_pos,
+        sigma_force=sigma_force,
+        force_threshold=force_threshold,
+        max_force_bonus=max_force_bonus,
+    )
+
+
 def object_grasp_relative_error_exp(env: WholeBodyTrackingManager, sigma: float) -> torch.Tensor:
     """Dense grasp signal: track the hand<->object RELATIVE position during contact frames.
 

@@ -244,3 +244,67 @@ def obj_lin_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
         unit_quat,
     )
     return vel_b.view(env.num_envs, -1)
+
+
+def obj_lin_vel_b_rotated(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 3): box linear velocity in the robot reference frame, rotation ONLY.
+
+    Corrected counterpart of ``obj_lin_vel_b`` above, which passes a velocity to
+    ``subtract_frame_transforms``. That helper builds ``R^T (t02 - t01)`` -- correct for a POSE, but
+    for a velocity it subtracts the reference body's world position from a free vector, returning
+    ``R^T (v_obj - p_torso)`` instead of ``R^T v_obj``. The parasitic ``-R^T p_torso`` is ~1.8 m/s
+    against a carry velocity of ~0.3 m/s and drifts with the robot's position in the scene; a box at
+    a dead stop reads as moving. Upstream states the rule explicitly in
+    ``managers/observation/terms/objects.py`` (``relative_to_root=True`` for positions, ``False`` for
+    both velocities).
+
+    Kept as a separate term rather than fixed in place: ``obj_lin_vel_b`` is in the critic group of
+    every existing ``w_object`` preset, so changing it would silently redefine the input of runs
+    already trained against it. Opt in via the object-velocity presets.
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    return quat_rotate_inverse(mc.robot_ref_quat_w, mc.simulator_object_lin_vel_w, w_last=True).view(
+        env.num_envs, -1
+    )
+
+
+def obj_ang_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
+    """(num_envs, 3): box angular velocity in the robot reference frame.
+
+    The critic already gets ``obj_lin_vel_b``; omitting the angular half was an asymmetry, and box
+    tumbling is exactly what ``object_flat_contact_quality_exp`` is meant to prevent.
+
+    (Ported from 1045923 on feat/dynamics-aware-training.)
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    return quat_rotate_inverse(mc.robot_ref_quat_w, mc.simulator_object_ang_vel_w, w_last=True).view(
+        env.num_envs, -1
+    )
+
+
+def obj_contact_flag(env: WholeBodyTrackingManager, force_threshold: float = 1.0) -> torch.Tensor:
+    """(num_envs, 3): ``[sim contact on anchor 0, sim contact on anchor 1, reference contact]``.
+
+    The binary state variable behind ``object_contact_force_match_exp``: what the hands are ACTUALLY
+    bearing (measured contact force over the threshold, per candidate anchor) next to what the
+    reference prescribes. Giving the critic both closes the loop -- it can see the realised contact
+    instead of inferring it from poses, and it can see the mismatch that the reward is paying on.
+
+    Critic-only: the G1 has no force sensing at the wrists, so none of this exists on hardware.
+
+    All zeros when the motion carries no object / no resolved anchors, so the term keeps a fixed
+    width whatever the clip.
+    """
+    mc = _get_motion_command_and_assert_type(env)
+    out = torch.zeros(env.num_envs, 3, device=env.device)
+    if mc._anchor_body_indexes is None:
+        return out
+
+    forces = env.simulator.contact_forces_history[:, :, mc._anchor_body_indexes]  # (N, H, A, 3)
+    per_anchor = torch.max(torch.norm(forces, dim=-1), dim=1)[0]  # (N, A)
+    n_anchor = min(per_anchor.shape[1], 2)
+    out[:, :n_anchor] = (per_anchor[:, :n_anchor] > force_threshold).float()
+
+    _, ref_contact = mc._lookup_ref_contact(mc.time_steps, mc.anchor_pos_w, mc.object_pos_w)
+    out[:, 2] = ref_contact.float()
+    return out

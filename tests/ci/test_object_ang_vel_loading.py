@@ -7,7 +7,6 @@ reward can stay neutral rather than train against zeros.
 
 import numpy as np
 import pytest
-
 from holosoma.managers.command.terms.wbt import MotionLoader
 
 BODY_NAMES = ["pelvis", "torso_link"]

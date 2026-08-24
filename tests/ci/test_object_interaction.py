@@ -3,7 +3,6 @@
 import math
 
 import torch
-
 from holosoma.utils.object_interaction import hdmi_contact_reward, velocity_tracking_reward
 
 CONTACT_KW = dict(sigma_pos=0.1, sigma_force=20.0, force_threshold=10.0, max_force_bonus=2.0)
