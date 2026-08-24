@@ -297,7 +297,7 @@ class MotionLoader:
 
             # Reference robot<->support contact (SYMMETRIC to object_ref_*: same shape, computed
             # by add_support_contact.py = wrist -> table surface, witness + distance). Feeds the
-            # support_surface_contact_error_exp reward (the robot learns to place its hand near the
+            # support contact fields, if a clip carries them (the robot learns to place its hand near the
             # table, not to barge into it). Frames T (T,) / witness (T,3) table-LOCAL.
             self.has_support_contact = self.has_support and "support_ref_contact" in data
             if self.has_support_contact:

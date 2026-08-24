@@ -91,7 +91,7 @@ class GraspSettleConfig:
     box_half_extents: tuple[float, float, float] = (0.16, 0.16, 0.16)
     """Object half-extents (m), box-local axes -- must match the grasped object's URDF/mesh
     (box32.obj: 0.32m cube). Used by the GPU box SDF/geodesic (utils/box_geometry.py) for the
-    surface-contact reward (object_surface_contact_error_exp): the live nearest-surface-point and
+    surface-contact fallback in object_contact_force_match_exp: the live nearest-surface-point and
     signed distance of the current sim contact are computed against THIS box, then compared to the
     retargeting-pipeline's reference witness/distance (see gvhmr-fp-pipeline/contact_from_retarget.py)."""
 
@@ -286,7 +286,8 @@ class GraspSettleConfig:
         ]
     )
     """Contact-patch keypoints on the hand's flat face, as offsets (m) in the anchor (wrist_yaw_link)
-    frame. Used by the contact-quality reward object_flat_contact_quality_exp: rewarding ALL of them to
+    frame. UNUSED since the contact-quality reward was removed; kept so existing run configs still
+    load. Was: rewarding ALL of them to
     be flush against the box (signed distance ~0) drives a PATCH contact -- >=3 non-collinear points
     touching == a flat face against the box face, which resists the rotational escape a single contact
     point cannot (the 155deg box tumble). Independent of the reference witness; teaches HOW to grip.

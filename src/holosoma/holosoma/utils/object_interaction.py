@@ -47,9 +47,11 @@ def hdmi_contact_reward(
     diverges exponentially with ``||F||``, so a single collision spike (contact forces reach ~2400 N
     on this robot) would swamp every other reward term for that step.
 
-    Off-gate returns 0 rather than 1: this is an additive term, so paying a constant on non-contact
-    frames would bonus the (easy) pre-contact phase against the (hard) carry phase -- the same
-    attractor-removal argument spelled out in ``object_flat_contact_quality_exp``.
+    Off-gate returns 0 rather than 1, and that is not cosmetic. An additive term paying a constant
+    on frames where nothing is happening is a survival bonus: in a discounted return its
+    contribution grows with episode length, so it rewards staying alive over doing the task. Here
+    it would bonus the (easy) pre-contact phase against the (hard) carry phase. The neutral value
+    of an additive reward is 0.
 
     ``gate`` may be boolean (HDMI's c_t) or a weight in [0, 1]; it multiplies the reward, so a bool
     gate is exactly the on/off behaviour and a ramped activation

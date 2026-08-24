@@ -272,7 +272,7 @@ def obj_ang_vel_b(env: WholeBodyTrackingManager) -> torch.Tensor:
     """(num_envs, 3): box angular velocity in the robot reference frame.
 
     The critic already gets ``obj_lin_vel_b``; omitting the angular half was an asymmetry, and box
-    tumbling is exactly what ``object_flat_contact_quality_exp`` is meant to prevent.
+    tumbling is the failure mode a fingerless palm cannot recover from.
 
     (Ported from 1045923 on feat/dynamics-aware-training.)
     """

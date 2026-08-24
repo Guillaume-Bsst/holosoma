@@ -107,40 +107,6 @@ g1_29dof_wbt_reward_w_object = RewardManagerCfg(
             params={"sigma": 0.4},
             weight=1.0,
         ),
-        # Dense grasp signal: hand<->object relative position on contact frames (neutral on free
-        # frames). Complements the global object terms, which say nothing about WHERE in the hand
-        # frame the object should be while carried.
-        "object_grasp_relative_error_exp": RewardTermCfg(
-            func="holosoma.managers.reward.terms.wbt:object_grasp_relative_error_exp",
-            params={"sigma": 0.1},
-            weight=1.0,
-        ),
-        # WHERE on the box surface + how deep the current contact is, vs the retargeting reference
-        # (HoloV2's own witness/distance point-cloud contact fields, baked per-frame -- see
-        # gvhmr-fp-pipeline/contact_from_retarget.py). Neutral automatically if the loaded motion
-        # doesn't carry a reference witness (older/synthetic clips).
-        "object_surface_contact_error_exp": RewardTermCfg(
-            func="holosoma.managers.reward.terms.wbt:object_surface_contact_error_exp",
-            params={"sigma_geodesic": 0.1, "sigma_dist": 0.05},
-            weight=1.0,
-        ),
-        # Contact QUALITY (option 2): reward the hand's flat-face keypoints to be flush against the
-        # box (patch contact that resists rotation). Independent of the reference witness -- teaches
-        # HOW to grip, pairs with the physicality curriculum. sigma=0.03 m (flush within a few cm).
-        "object_flat_contact_quality_exp": RewardTermCfg(
-            func="holosoma.managers.reward.terms.wbt:object_flat_contact_quality_exp",
-            params={"sigma": 0.03},
-            weight=1.0,
-        ),
-        # robot<->TABLE: same surface-contact reward (witness + SDF) as for the box, but on the
-        # static table object. Teaches the robot to put its hand in the right spot near the table
-        # (approach/drop-off) and not to barge into it. Neutral if the clip carries no table.
-        # Lower weight than the box (secondary placement signal, not the main task).
-        "support_surface_contact_error_exp": RewardTermCfg(
-            func="holosoma.managers.reward.terms.wbt:support_surface_contact_error_exp",
-            params={"sigma_geodesic": 0.1, "sigma_dist": 0.05},
-            weight=0.5,
-        ),
     }
 )
 
@@ -186,7 +152,7 @@ object_velocity_reward_terms = {
 # purely kinematic: a hand can satisfy them resting a millimetre off the box, carrying nothing. This
 # one reads the measured contact force, so it separates a grip that bears load from a pose that only
 # looks like one.
-#   sigma_pos 0.1 m      matches object_surface_contact_error_exp's geodesic sigma.
+#   sigma_pos 0.1 m      a hand within ~10 cm of its target contact point on the box.
 #   force_threshold 10 N "actually bearing something" rather than brushing past.
 #   sigma_force 20 N     with max_force_bonus 2.0 the bonus saturates near 24 N, i.e. a firm grip
 #                        gets the full factor and a crush gets nothing more.

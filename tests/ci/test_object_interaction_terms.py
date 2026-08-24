@@ -127,11 +127,12 @@ def test_ang_vel_reward_tracks_the_angular_reference():
     assert r[1] < r[0]
 
 
-def test_ang_vel_reward_is_neutral_without_a_reference():
-    # clip baked before the converter wrote object_ang_vel_w: constant 1, no gradient
+def test_ang_vel_reward_is_zero_without_a_reference():
+    # Clip baked before the converter wrote object_ang_vel_w. ZERO, not one: a constant paid every
+    # step is a survival bonus in a discounted return, not a neutral value.
     env, _ = _build(obj_ang=torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, 2.0]]),
                     motion_over={"has_object_ang_vel": False})
-    assert torch.allclose(object_global_ref_ang_vel_error_exp(env, sigma=3.14), torch.ones(N), atol=1e-6)
+    assert torch.allclose(object_global_ref_ang_vel_error_exp(env, sigma=3.14), torch.zeros(N), atol=1e-6)
 
 
 #########################################################################################
@@ -197,10 +198,11 @@ def test_contact_reward_falls_back_to_the_box_surface_without_a_witness():
     assert r[1] < r[0]                                          # 0.5 m off the surface
 
 
-def test_contact_reward_is_neutral_without_resolved_anchors():
+def test_contact_reward_is_zero_without_resolved_anchors():
+    # no object in the scene -> the term contributes nothing, which is 0 and not 1
     env, mc = _build()
     mc._anchor_body_indexes = None
-    assert torch.allclose(object_contact_force_match_exp(env, **CONTACT_KW), torch.ones(N), atol=1e-6)
+    assert torch.allclose(object_contact_force_match_exp(env, **CONTACT_KW), torch.zeros(N), atol=1e-6)
 
 
 #########################################################################################
