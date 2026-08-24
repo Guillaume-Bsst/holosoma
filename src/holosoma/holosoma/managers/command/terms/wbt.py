@@ -1110,6 +1110,10 @@ class MotionCommand(CommandTermBase):
             obj_pos = self.object_pos_w[env_ids]
             obj_ori = self.object_quat_w[env_ids]
             obj_lin_vel = self.object_lin_vel_w[env_ids]
+            # Angular velocity used to be hard-zeroed here while the linear half took the reference,
+            # because object_ang_vel_w was never loaded. On clips that do not carry the field the
+            # accessor returns zeros, so those degrade to exactly the previous behaviour.
+            obj_ang_vel = self.object_ang_vel_w[env_ids]
 
             # 4.2 add noise to the object states
             obj_pos_noise = torch.tensor(
@@ -1125,11 +1129,12 @@ class MotionCommand(CommandTermBase):
                 keep = (~contact_mask).float().unsqueeze(-1)  # 1.0 free frame, 0.0 contact frame
                 obj_noise = obj_noise * keep
                 obj_lin_vel = obj_lin_vel * keep
+                obj_ang_vel = obj_ang_vel * keep
             target_obj_pos = obj_pos + obj_noise
 
             object_states = torch.cat(
-                [target_obj_pos, obj_ori, obj_lin_vel, torch.zeros_like(obj_lin_vel)], dim=-1
-            )  # (num_envs, 7)
+                [target_obj_pos, obj_ori, obj_lin_vel, obj_ang_vel], dim=-1
+            )  # (num_envs, 13)
             # 4.3 set the object states in simulator
             self._env.simulator.set_actor_states([self.object_name], env_ids, object_states)
 
@@ -1225,10 +1230,10 @@ class MotionCommand(CommandTermBase):
                     ref_pos = obj_pos_ref[kin_ids]
                     ref_quat = obj_quat_ref[kin_ids]
                     ref_lin_vel = self.object_lin_vel_w[kin_ids]
-                    zeros_ang = torch.zeros(kin_ids.numel(), 3, device=self.device)
+                    ref_ang_vel = self.object_ang_vel_w[kin_ids]
                     if alpha >= 0.999:
                         # fully kinematic (fast path): box forced onto the reference
-                        kin_state = torch.cat([ref_pos, ref_quat, ref_lin_vel, zeros_ang], dim=-1)
+                        kin_state = torch.cat([ref_pos, ref_quat, ref_lin_vel, ref_ang_vel], dim=-1)
                         self._env.simulator.set_actor_states([self.object_name], kin_ids, kin_state)
                     elif cfg_gs.physicality_force_mode:
                         # FORCE-MODE assist: gravity feedforward + bounded tracking PD, the whole
@@ -1251,7 +1256,9 @@ class MotionCommand(CommandTermBase):
                         rel = quat_mul(ref_quat, quat_inverse(cur[:, 3:7], w_last=True), w_last=True)
                         # NB: quat_to_angle_axis's 2nd return is already the rotation VECTOR (axis*angle)
                         rotvec = quat_to_angle_axis(rel)[1]
-                        torque = cfg_gs.force_assist_kp_rot * rotvec - cfg_gs.force_assist_kd_rot * cur[:, 10:13]
+                        torque = cfg_gs.force_assist_kp_rot * rotvec - cfg_gs.force_assist_kd_rot * (
+                            cur[:, 10:13] - ref_ang_vel
+                        )
                         # Cache the per-env masses / weights once: both come from the STARTUP mass
                         # randomisation, so they never change afterwards.
                         if self._object_mass is None:
@@ -1300,7 +1307,7 @@ class MotionCommand(CommandTermBase):
                                 alpha * ref_pos + (1.0 - alpha) * cur[:, :3],
                                 slerp(cur[:, 3:7], ref_quat, t),
                                 alpha * ref_lin_vel + (1.0 - alpha) * cur[:, 7:10],
-                                (1.0 - alpha) * cur[:, 10:13],
+                                alpha * ref_ang_vel + (1.0 - alpha) * cur[:, 10:13],
                             ],
                             dim=-1,
                         )
