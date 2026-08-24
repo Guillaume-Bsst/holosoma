@@ -46,6 +46,11 @@ g1_29dof_wbt_termination = TerminationManagerCfg(
                 # radius, so we do not kill on noise / contact transients).
                 "bad_object_pos_threshold": 0.15,
                 "bad_object_ori_threshold": 0.8,
+                # Set False to stop a dropped / mistracked box from killing the episode, leaving it
+                # a reward loss only. Declared here rather than read with a default in the term, so
+                # tyro exposes it:
+                #   --termination.terms.bad_tracking.params.enable_object_termination=False
+                "enable_object_termination": True,
             },
         ),
     }

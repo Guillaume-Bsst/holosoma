@@ -55,6 +55,9 @@ class BadTracking(TerminationTermBase):
 
         self.bad_object_pos_threshold = cfg.params["bad_object_pos_threshold"]
         self.bad_object_ori_threshold = cfg.params["bad_object_ori_threshold"]
+        # Kill switch for the object half of this term. Defaults to True, and `.get` rather than
+        # `[...]` so configs saved before the parameter existed still load.
+        self.enable_object_termination = bool(cfg.params.get("enable_object_termination", True))
 
     def __call__(self, env: Any, **kwargs) -> torch.Tensor:
         motion_command = self.env.command_manager.get_state("motion_command")
@@ -70,10 +73,17 @@ class BadTracking(TerminationTermBase):
         bad_motion_body_pos = self.bad_motion_body_pos(motion_command)
         bad_tracking = bad_ref_pos | bad_ref_ori | bad_motion_body_pos
 
-        # object terminations gated off at low force-mode assist (object_term_min_alpha): a drop
-        # must be a reward loss the policy can learn from, not an episode kill that collapses the
-        # curriculum's success signal right when the box goes fully physical.
-        if motion_command.motion.has_object and getattr(motion_command, "object_termination_enabled", True):
+        # Object terminations are off when any of three things says so:
+        #  - enable_object_termination=False, the explicit run-level switch;
+        #  - the clip carries no object at all;
+        #  - object_term_min_alpha, at low force-mode assist -- a drop must then be a reward loss the
+        #    policy can learn from, not an episode kill that collapses the curriculum's success
+        #    signal right when the box goes fully physical.
+        if (
+            self.enable_object_termination
+            and motion_command.motion.has_object
+            and getattr(motion_command, "object_termination_enabled", True)
+        ):
             bad_object_pos = self.bad_object_pos(motion_command)
             bad_object_ori = self.bad_object_ori(motion_command)
             bad_tracking |= bad_object_pos | bad_object_ori
