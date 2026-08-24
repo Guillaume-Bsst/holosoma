@@ -70,20 +70,60 @@ def test_reward_blocks_are_additive_and_independent(base):
 def test_velocity_reward_weights_and_sigmas():
     terms = reward.g1_29dof_wbt_reward_w_object_actor_objvel.terms
     lin, ang = terms[VEL_TERMS[0]], terms[VEL_TERMS[1]]
-    assert (lin.weight, lin.params["sigma"]) == (0.5, 1.0)
-    assert (ang.weight, ang.params["sigma"]) == (0.5, 3.14)
+    assert (lin.weight, lin.params["sigma"]) == (0.5, 0.5)
+    assert (ang.weight, ang.params["sigma"]) == (0.5, 0.3)
     assert lin.func.endswith(":object_global_ref_lin_vel_error_exp")
     assert ang.func.endswith(":object_global_ref_ang_vel_error_exp")
 
 
+def test_velocity_sigmas_are_scaled_to_the_object_not_to_robot_bodies():
+    # Guards the calibration: the robot-side body velocity terms use 1.0 / 3.14, which leave these
+    # flat over a carried box's range (|w| p95 0.546 rad/s). A do-nothing policy must not score near
+    # the maximum, or the term is a constant and a constant is a survival bonus.
+    import math
+
+    terms = reward.g1_29dof_wbt_reward_w_object_actor_objvel.terms
+    p95_ang, p95_lin = 0.546, 0.979  # measured over the 14 object clips, moving frames
+    lazy_ang = math.exp(-(p95_ang**2) / terms[VEL_TERMS[1]].params["sigma"] ** 2)
+    lazy_lin = math.exp(-(p95_lin**2) / terms[VEL_TERMS[0]].params["sigma"] ** 2)
+    assert lazy_ang < 0.2, f"angular term barely moves over its own data range ({lazy_ang:.3f})"
+    assert lazy_lin < 0.2, f"linear term barely moves over its own data range ({lazy_lin:.3f})"
+
+
 def test_contact_reward_weight_and_params():
     t = reward.g1_29dof_wbt_reward_w_object_actor_objcontact.terms[CONTACT_TERMS[0]]
-    assert t.weight == 1.0
-    assert t.params == {"sigma_pos": 0.1, "sigma_force": 20.0, "force_threshold": 10.0, "max_force_bonus": 2.0}
-    # the reward threshold means "bearing load", well above the obs "touching at all" threshold
+    assert t.weight == 2.5
+    assert t.params == {"sigma_pos": 0.1, "sigma_force": 4.0, "force_threshold": 2.0, "max_force_bonus": 2.0}
+    # the reward threshold means "bearing load", above the obs "touching at all" threshold
     assert t.params["force_threshold"] > observation.critic_obs_object_contact_terms[
         "obj_contact_flag"
     ].params["force_threshold"]
+
+
+def test_contact_force_threshold_is_below_what_a_correct_carry_bears():
+    # The box weighs 0.811 kg = 7.96 N, so a bimanual carry puts ~4 N on each hand. A threshold at
+    # or above that never fires, and the term silently collapses to its proximity factor -- which is
+    # what a 10 N threshold did.
+    import math
+
+    t = reward.g1_29dof_wbt_reward_w_object_actor_objcontact.terms[CONTACT_TERMS[0]]
+    per_hand_newtons = 0.811 * 9.81 / 2
+    bonus = min(
+        max(math.exp((per_hand_newtons - t.params["force_threshold"]) / t.params["sigma_force"]), 1.0),
+        t.params["max_force_bonus"],
+    )
+    assert bonus > 1.2, f"a correct bimanual carry earns no force bonus (factor {bonus:.2f})"
+
+
+def test_contact_weight_matches_hdmi_contact_to_pose_ratio():
+    # HDMI Table I: Contact 5.0 against Object Pose 2.0. Our term's ceiling is 2x a plain exp term
+    # (capped force bonus times proximity), so the ratio is taken at the ceiling.
+    terms = reward.g1_29dof_wbt_reward_w_object_actor_objcontact.terms
+    pose = sum(terms[k].weight for k in ("object_global_ref_position_error_exp",
+                                         "object_global_ref_orientation_error_exp"))
+    contact_ceiling = terms[CONTACT_TERMS[0]].weight * terms[CONTACT_TERMS[0]].params["max_force_bonus"]
+    assert pose == 2.0
+    assert contact_ceiling / pose == 2.5
 
 
 #########################################################################################
