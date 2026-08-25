@@ -83,3 +83,44 @@ def test_it_survives_an_env_without_a_log_dict():
 def test_the_pattern_selects_the_same_bodies_the_term_uses():
     term, _ = _term()
     assert term.undesired_contacts_body_names == [b for b in BODIES if re.match(PATTERN, b)]
+
+
+#########################################################################################
+## the object presets let the arm touch the box
+#########################################################################################
+def test_the_object_preset_does_not_charge_the_arm_for_carrying():
+    # Carrying a 32 cm box means palm, forearm and sometimes upper arm are against it. Penalising
+    # that at -0.1 per contact charges the grasp itself.
+    from holosoma.config_values.wbt.g1 import reward as reward_cfg
+
+    pattern = reward_cfg.g1_29dof_wbt_reward_w_object.terms["undesired_contacts"].params[
+        "undesired_contacts_body_names"
+    ]
+    for side in ("left", "right"):
+        for part in ("shoulder_pitch", "shoulder_roll", "shoulder_yaw", "elbow",
+                     "wrist_roll", "wrist_pitch", "wrist_yaw"):
+            body = f"{side}_{part}_link"
+            assert not re.match(pattern, body), f"{body} is still penalised while carrying"
+
+
+def test_a_fall_is_still_caught():
+    # torso, waist, pelvis and the legs stay penalised -- otherwise the term stops detecting falls,
+    # which is what it exists for
+    from holosoma.config_values.wbt.g1 import reward as reward_cfg
+
+    pattern = reward_cfg.g1_29dof_wbt_reward_w_object.terms["undesired_contacts"].params[
+        "undesired_contacts_body_names"
+    ]
+    for body in ("pelvis", "torso_link", "waist_yaw_link", "left_knee_link", "right_knee_link"):
+        assert re.match(pattern, body), f"{body} should still be penalised"
+
+
+def test_the_locomotion_preset_is_untouched():
+    # there is no reason to let a forearm touch things during plain locomotion
+    from holosoma.config_values.wbt.g1 import reward as reward_cfg
+
+    pattern = reward_cfg.g1_29dof_wbt_reward.terms["undesired_contacts"].params[
+        "undesired_contacts_body_names"
+    ]
+    assert re.match(pattern, "left_elbow_link")
+    assert not re.match(pattern, "left_wrist_yaw_link")

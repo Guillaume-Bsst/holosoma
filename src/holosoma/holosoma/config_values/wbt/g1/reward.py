@@ -93,9 +93,31 @@ g1_29dof_wbt_fast_sac_reward = RewardManagerCfg(
     }
 )
 
+# Carrying a 32 cm box means the arm touches it -- palm, forearm, sometimes the upper arm. The base
+# preset penalises 26 of the robot's 32 bodies at -0.1 per contact, sparing only the ankles, the foot
+# contact points and wrist_yaw_link, so the grasp itself was being charged: measured at ~5.4 contact
+# events per episode, about 4% of the reward. The whole arm chain is excluded here, on the object
+# preset only -- there is no reason to let a forearm touch things during plain locomotion.
+#
+# The hand is not named because it is not a body: sphere_hand_link is a fixed-joint child, so
+# collapse_fixed_joints merges its collision into wrist_yaw_link, which is already spared.
+#
+# Torso, waist and pelvis stay penalised on purpose. They are what makes this term still catch a
+# fall, which is the thing it exists for.
+_ARM_CHAIN_UNPENALISED = (
+    r"^(?!(?:left|right)_(?:foot_contact_point|ankle_roll_link"
+    r"|shoulder_pitch_link|shoulder_roll_link|shoulder_yaw_link"
+    r"|elbow_link|wrist_roll_link|wrist_pitch_link|wrist_yaw_link)$).+$"
+)
+
 g1_29dof_wbt_reward_w_object = RewardManagerCfg(
     terms={
         **g1_29dof_wbt_reward.terms,
+        "undesired_contacts": RewardTermCfg(
+            func="holosoma.managers.reward.terms.wbt:UndesiredContacts",
+            params={"threshold": 1.0, "undesired_contacts_body_names": _ARM_CHAIN_UNPENALISED},
+            weight=-0.1,
+        ),
         # Motion tracking rewards - global reference frame
         "object_global_ref_position_error_exp": RewardTermCfg(
             func="holosoma.managers.reward.terms.wbt:object_global_ref_position_error_exp",
