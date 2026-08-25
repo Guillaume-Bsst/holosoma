@@ -251,6 +251,7 @@ class UndesiredContacts(RewardTermBase):
             for body_name in self.env.simulator.body_names  # type: ignore[attr-defined]
             if re.match(cfg.params.get("undesired_contacts_body_names", ""), body_name)
         ]
+        self.undesired_contacts_body_names = undesired_contacts_body_names
         self.undesired_contacts_body_indexes = self._get_index_of_a_in_b(
             undesired_contacts_body_names,
             self.env.simulator.body_names,  # type: ignore[attr-defined]
@@ -265,6 +266,15 @@ class UndesiredContacts(RewardTermBase):
             torch.max(torch.norm(net_contact_forces[:, :, self.undesired_contacts_body_indexes], dim=-1), dim=1)[0]
             > self.threshold
         )
+        # Per-body breakdown. The term only ever reported a COUNT, so a penalty of 5.4 per episode
+        # said nothing about which bodies earn it -- and the answer decides whether the regex is
+        # penalising a body that legitimately has to touch the box while carrying it (a forearm
+        # against a 32 cm cube) rather than a genuine collision.
+        log = getattr(self.env, "log_dict", None)
+        if log is not None:
+            frac = is_contact.float().mean(dim=0).detach().cpu()
+            for name, value in zip(self.undesired_contacts_body_names, frac):
+                log[f"undesired_contacts/{name}"] = value
         return torch.sum(is_contact, dim=1)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
