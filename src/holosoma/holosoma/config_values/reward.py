@@ -37,6 +37,7 @@ DEFAULTS = {
     "g1_27dof_wbt_w_object_actor_objcontact": g1_29dof_wbt_reward_w_object_objcontact,
     "g1_29dof_wbt_w_object_actor_objvel_objcontact": g1_29dof_wbt_reward_w_object_actor_objvel_objcontact,
     "g1_27dof_wbt_w_object_actor_objvel_objcontact": g1_29dof_wbt_reward_w_object_objvel_objcontact,
+    "g1_29dof_wbt_w_object_objvel_objcontact": g1_29dof_wbt_reward_w_object_objvel_objcontact,
     "g1_29dof_wbt_fast_sac": g1_29dof_wbt_fast_sac_reward,
     "g1_27dof_wbt_fast_sac": g1_29dof_wbt_fast_sac_reward,
 }

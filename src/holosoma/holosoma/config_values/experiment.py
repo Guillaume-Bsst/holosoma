@@ -21,6 +21,7 @@ from holosoma.config_values.wbt.g1.experiment import (
     g1_29dof_wbt_w_object_actor_objcontact,
     g1_29dof_wbt_w_object_actor_objvel,
     g1_29dof_wbt_w_object_actor_objvel_objcontact,
+    g1_29dof_wbt_w_object_objvel_objcontact,
 )
 
 DEFAULTS = {
@@ -44,6 +45,7 @@ DEFAULTS = {
     "g1_27dof_wbt_w_object_actor_objcontact": g1_27dof_wbt_w_object_actor_objcontact,
     "g1_29dof_wbt_w_object_actor_objvel_objcontact": g1_29dof_wbt_w_object_actor_objvel_objcontact,
     "g1_27dof_wbt_w_object_actor_objvel_objcontact": g1_27dof_wbt_w_object_actor_objvel_objcontact,
+    "g1_29dof_wbt_w_object_objvel_objcontact": g1_29dof_wbt_w_object_objvel_objcontact,
     "g1_27dof_wbt_fast_sac": g1_27dof_wbt_fast_sac,
     "g1_27dof_wbt_fast_sac_w_object": g1_27dof_wbt_fast_sac_w_object,
 }

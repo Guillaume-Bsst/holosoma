@@ -298,6 +298,13 @@ g1_29dof_wbt_w_object_actor_objvel_objcontact = replace(
     reward=reward.g1_29dof_wbt_reward_w_object_actor_objvel_objcontact,
 )
 
+# Ablation of the preset above: identical rewards, terminations, curriculum and critic inputs, with
+# the object pose taken out of the ACTOR group only.
+g1_29dof_wbt_w_object_objvel_objcontact = replace(
+    g1_29dof_wbt_w_object_actor_objvel_objcontact,
+    observation=observation.g1_29dof_wbt_observation_w_object_objvel_objcontact,
+)
+
 g1_27dof_wbt_w_object_actor_objvel = replace(
     g1_27dof_wbt_w_object_actor,
     observation=observation.g1_29dof_wbt_observation_w_object_actor_objvel,
@@ -320,6 +327,7 @@ __all__ = [
     "g1_29dof_wbt_w_object_actor_objvel",
     "g1_29dof_wbt_w_object_actor_objcontact",
     "g1_29dof_wbt_w_object_actor_objvel_objcontact",
+    "g1_29dof_wbt_w_object_objvel_objcontact",
     "g1_27dof_wbt_w_object_actor_objvel",
     "g1_27dof_wbt_w_object_actor_objcontact",
     "g1_27dof_wbt_w_object_actor_objvel_objcontact",

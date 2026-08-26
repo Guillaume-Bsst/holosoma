@@ -9,6 +9,7 @@ from holosoma.config_values.wbt.g1.observation import (
     g1_29dof_wbt_observation_w_object_actor_objcontact,
     g1_29dof_wbt_observation_w_object_actor_objvel,
     g1_29dof_wbt_observation_w_object_actor_objvel_objcontact,
+    g1_29dof_wbt_observation_w_object_objvel_objcontact,
 )
 
 none = None
@@ -30,4 +31,5 @@ DEFAULTS = {
     "g1_27dof_wbt_w_object_actor_objcontact": g1_29dof_wbt_observation_w_object_actor_objcontact,
     "g1_29dof_wbt_w_object_actor_objvel_objcontact": g1_29dof_wbt_observation_w_object_actor_objvel_objcontact,
     "g1_27dof_wbt_w_object_actor_objvel_objcontact": g1_29dof_wbt_observation_w_object_actor_objvel_objcontact,
+    "g1_29dof_wbt_w_object_objvel_objcontact": g1_29dof_wbt_observation_w_object_objvel_objcontact,
 }

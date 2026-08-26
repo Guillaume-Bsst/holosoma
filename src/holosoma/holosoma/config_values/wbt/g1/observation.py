@@ -1,5 +1,7 @@
 """Whole Body Tracking observation presets for the G1 robot."""
 
+from dataclasses import replace
+
 from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
 
 actor_obs_shared = ObsGroupCfg(
@@ -259,6 +261,19 @@ g1_29dof_wbt_observation_w_object_actor_objvel_objcontact = _w_object_actor_obse
     critic_obs_object_velocity_terms, critic_obs_object_contact_terms
 )
 
+# Actor-blind counterpart of the preset above: same critic (privileged object pose, velocity and
+# contact) and the same rewards, but the actor group stays at actor_obs_shared -- no obj_pos_b, no
+# obj_ori_b. This is the ablation arm for "does the actor need to see the box, or does the reference
+# motion already tell it where the box is?". Derived from the actor preset rather than rebuilt from
+# the blocks, so the two arms cannot drift apart on the critic side.
+g1_29dof_wbt_observation_w_object_objvel_objcontact = replace(
+    g1_29dof_wbt_observation_w_object_actor_objvel_objcontact,
+    groups={
+        **g1_29dof_wbt_observation_w_object_actor_objvel_objcontact.groups,
+        "actor_obs": actor_obs_shared,
+    },
+)
+
 __all__ = [
     "critic_obs_object_contact_terms",
     "critic_obs_object_velocity_terms",
@@ -268,4 +283,5 @@ __all__ = [
     "g1_29dof_wbt_observation_w_object_actor_objvel",
     "g1_29dof_wbt_observation_w_object_actor_objcontact",
     "g1_29dof_wbt_observation_w_object_actor_objvel_objcontact",
+    "g1_29dof_wbt_observation_w_object_objvel_objcontact",
 ]
