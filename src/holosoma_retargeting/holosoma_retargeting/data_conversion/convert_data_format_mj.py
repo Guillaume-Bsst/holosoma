@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -137,7 +138,15 @@ class MotionLoader:
         """Loads the motion from the csv file."""
         if self.motion_file.endswith(".npz"):
             data = np.load(self.motion_file)
-            self.input_fps = round(1 / data.get("fps", 1 / self.input_fps))
+            # The clip's own rate wins when the file carries one: a top-level `fps` key (flat
+            # {qpos, fps} exports) or the RunOutput `__meta__` JSON blob. fps is a RATE, not a
+            # period: the old `round(1 / fps)` collapsed any real value to 0 and the CLI flag
+            # silently kept ruling input_dt.
+            if "fps" in data.files:
+                self.input_fps = round(float(np.atleast_1d(data["fps"])[0]))
+            elif "__meta__" in data.files:
+                self.input_fps = round(float(json.loads(bytes(data["__meta__"]).decode("utf-8"))["fps"]))
+            self.input_dt = 1.0 / self.input_fps
             motion = torch.from_numpy(data["qpos"]).to(torch.float32)
         else:
             raise ValueError("Unsupported motion file format. Use .csv or .npz.")
